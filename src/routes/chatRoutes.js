@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { sendMessage, getChatHistory, clearChat } = require('../controllers/chatController');
+const { sendMessage, getChatHistory, clearChat, getSuggestions } = require('../controllers/chatController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -73,5 +73,28 @@ router.get('/history', protect, getChatHistory);
  *       200: { description: Chat cleared }
  */
 router.delete('/clear', protect, clearChat);
+
+/**
+ * @swagger
+ * /chat/suggestions:
+ *   get:
+ *     tags: [AI Chat]
+ *     summary: Get personalized quick-reply suggestions
+ *     description: Returns smart suggestions based on user's fitness goal, time of day, and profile
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Suggestions list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items: { type: string }
+ */
+router.get('/suggestions', protect, getSuggestions);
 
 module.exports = router;

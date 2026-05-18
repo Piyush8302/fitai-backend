@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, sendOtp, verifyOtp, googleLogin, getMe, updateProfile } = require('../controllers/authController');
+const { register, login, sendOtp, verifyOtp, googleLogin, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -156,5 +156,84 @@ router.get('/me', protect, getMe);
  *       200: { description: Profile updated }
  */
 router.put('/profile', protect, updateProfile);
+
+/**
+ * @swagger
+ * /auth/change-password:
+ *   put:
+ *     tags: [Auth]
+ *     summary: Change password (logged-in user)
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [currentPassword, newPassword]
+ *             properties:
+ *               currentPassword: { type: string, example: "oldpass123" }
+ *               newPassword: { type: string, example: "newpass456" }
+ *     responses:
+ *       200: { description: Password changed }
+ *       401: { description: Current password incorrect }
+ */
+router.put('/change-password', protect, changePassword);
+
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Send password reset OTP to email
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email: { type: string, example: "rahul@example.com" }
+ *     responses:
+ *       200: { description: OTP sent to email }
+ *       404: { description: No account with that email }
+ */
+router.post('/forgot-password', forgotPassword);
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Reset password with OTP
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, otp, newPassword]
+ *             properties:
+ *               email: { type: string, example: "rahul@example.com" }
+ *               otp: { type: string, example: "123456" }
+ *               newPassword: { type: string, example: "newpass456" }
+ *     responses:
+ *       200: { description: Password reset successful }
+ *       400: { description: Invalid or expired OTP }
+ */
+router.post('/reset-password', resetPassword);
+
+/**
+ * @swagger
+ * /auth/delete-account:
+ *   delete:
+ *     tags: [Auth]
+ *     summary: Deactivate/delete account
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Account deactivated }
+ */
+router.delete('/delete-account', protect, deleteAccount);
 
 module.exports = router;

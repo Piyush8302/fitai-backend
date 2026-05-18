@@ -46,13 +46,19 @@ app.use('/api/tracking', require('./routes/trackingRoutes'));
 app.use('/api/chat', require('./routes/chatRoutes'));
 app.use('/api/subscription', require('./routes/subscriptionRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/articles', require('./routes/articlesRoutes'));
+app.use('/api/food', require('./routes/foodRoutes'));
+app.use('/api/exercises', require('./routes/exerciseRoutes'));
+app.use('/api/favorites', require('./routes/favoritesRoutes'));
+app.use('/api/achievements', require('./routes/achievementsRoutes'));
+app.use('/api/notifications', require('./routes/notificationsRoutes'));
 
 // Health check
 app.get('/', (req, res) => {
   res.json({
     success: true,
     message: '🏋️ FitAI Backend API is running!',
-    version: '1.0.0',
+    version: '2.0.0',
     docs: '/api-docs',
     endpoints: {
       auth: '/api/auth',
@@ -63,6 +69,12 @@ app.get('/', (req, res) => {
       chat: '/api/chat',
       subscription: '/api/subscription',
       admin: '/api/admin',
+      articles: '/api/articles',
+      food: '/api/food',
+      exercises: '/api/exercises',
+      favorites: '/api/favorites',
+      achievements: '/api/achievements',
+      notifications: '/api/notifications',
     },
   });
 });

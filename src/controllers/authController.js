@@ -129,6 +129,98 @@ exports.getMe = async (req, res, next) => {
   }
 };
 
+// @desc    Change password
+exports.changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Provide current and new password' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user.id).select('+password');
+    if (!user.password) {
+      return res.status(400).json({ success: false, message: 'Account uses social login, cannot change password' });
+    }
+
+    const isMatch = await user.matchPassword(currentPassword);
+    if (!isMatch) return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+
+    user.password = newPassword;
+    await user.save();
+
+    const token = user.getSignedToken();
+    res.json({ success: true, message: 'Password changed successfully', token });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Forgot password - send reset OTP
+exports.forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: 'Provide email' });
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ success: false, message: 'No account with that email' });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+
+    // TODO: Send OTP via email service
+    console.log(`📧 Password reset OTP for ${email}: ${otp}`);
+
+    res.json({ success: true, message: 'Reset OTP sent to email', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Reset password with OTP
+exports.resetPassword = async (req, res, next) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Provide email, OTP, and new password' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+
+    const user = await User.findOne({ email }).select('+otp +otpExpiry');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (user.otp !== otp || user.otpExpiry < Date.now()) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    }
+
+    user.password = newPassword;
+    user.otp = undefined;
+    user.otpExpiry = undefined;
+    await user.save();
+
+    const token = user.getSignedToken();
+    res.json({ success: true, message: 'Password reset successful', token });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete account
+exports.deleteAccount = async (req, res, next) => {
+  try {
+    await User.findByIdAndUpdate(req.user.id, { isActive: false });
+    res.json({ success: true, message: 'Account deactivated successfully' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Update profile
 exports.updateProfile = async (req, res, next) => {
   try {
