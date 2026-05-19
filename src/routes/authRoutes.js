@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, sendOtp, verifyOtp, googleLogin, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount } = require('../controllers/authController');
+const { register, login, sendOtp, verifyOtp, googleLogin, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -235,5 +235,16 @@ router.post('/reset-password', resetPassword);
  *       200: { description: Account deactivated }
  */
 router.delete('/delete-account', protect, deleteAccount);
+
+/**
+ * @swagger
+ * /auth/seed-admin:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Create default admin user (one-time setup)
+ *     responses:
+ *       201: { description: Admin user created }
+ */
+router.post('/seed-admin', seedAdmin);
 
 module.exports = router;

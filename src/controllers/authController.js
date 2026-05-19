@@ -239,3 +239,31 @@ exports.updateProfile = async (req, res, next) => {
     next(error);
   }
 };
+
+// @desc    Seed admin user
+exports.seedAdmin = async (req, res, next) => {
+  try {
+    const adminExists = await User.findOne({ role: 'admin' });
+    if (adminExists) {
+      return res.json({ success: true, message: 'Admin already exists', email: adminExists.email });
+    }
+
+    const admin = await User.create({
+      name: 'FitAI Admin',
+      email: 'admin@fitai.com',
+      password: 'admin123',
+      role: 'admin',
+      isActive: true,
+      isPremium: true,
+      isProfileComplete: true,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Admin user created',
+      credentials: { email: 'admin@fitai.com', password: 'admin123' },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
