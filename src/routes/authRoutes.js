@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, sendOtp, verifyOtp, googleLogin, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin } = require('../controllers/authController');
+const { register, login, sendOtp, verifyOtp, googleLogin, googleMobileAuth, googleCallback, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -116,6 +116,8 @@ router.post('/verify-otp', verifyOtp);
  *       200: { description: Google login successful }
  */
 router.post('/google', googleLogin);
+router.get('/google/mobile', googleMobileAuth);
+router.get('/google/callback', googleCallback);
 
 /**
  * @swagger

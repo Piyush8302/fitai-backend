@@ -99,7 +99,7 @@ exports.verifyOtp = async (req, res, next) => {
   }
 };
 
-// @desc    Google login
+// @desc    Google login (API - receives user info from frontend)
 exports.googleLogin = async (req, res, next) => {
   try {
     const { email, name, avatar, googleId } = req.body;
@@ -116,6 +116,79 @@ exports.googleLogin = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+// @desc    Google OAuth redirect (for mobile app)
+exports.googleMobileAuth = (req, res) => {
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
+  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+
+  const authUrl =
+    'https://accounts.google.com/o/oauth2/v2/auth?' +
+    `client_id=${GOOGLE_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(callbackUrl)}` +
+    '&response_type=code' +
+    `&scope=${encodeURIComponent('profile email')}` +
+    '&access_type=offline' +
+    '&prompt=consent';
+
+  res.redirect(authUrl);
+};
+
+// @desc    Google OAuth callback (handles code exchange and redirects to app)
+exports.googleCallback = async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) return res.status(400).send('No authorization code received');
+
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: callbackUrl,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      return res.redirect('fitai://auth?error=token_failed');
+    }
+
+    const userRes = await fetch('https://www.googleapis.com/userinfo/v2/me', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const googleUser = await userRes.json();
+
+    let user = await User.findOne({ email: googleUser.email });
+    if (!user) {
+      user = await User.create({
+        email: googleUser.email,
+        name: googleUser.name,
+        avatar: googleUser.picture,
+        authProvider: 'google',
+      });
+    }
+
+    const jwtToken = user.getSignedToken();
+    const userData = encodeURIComponent(JSON.stringify({
+      id: user._id, name: user.name, email: user.email,
+      isProfileComplete: user.isProfileComplete, isPremium: user.isPremium,
+    }));
+
+    res.redirect(`fitai://auth?token=${jwtToken}&user=${userData}`);
+  } catch (error) {
+    console.error('Google callback error:', error);
+    res.redirect('fitai://auth?error=server_error');
   }
 };
 
