@@ -125,6 +125,10 @@ exports.googleMobileAuth = (req, res) => {
   const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const callbackUrl = `${protocol}://${req.get('host')}/api/auth/google/callback`;
 
+  // Store the app's redirect URL in the state parameter so the callback knows where to send the user
+  const appRedirect = req.query.redirect || 'fitai://auth';
+  const state = Buffer.from(JSON.stringify({ redirect: appRedirect })).toString('base64');
+
   const authUrl =
     'https://accounts.google.com/o/oauth2/v2/auth?' +
     `client_id=${GOOGLE_CLIENT_ID}` +
@@ -132,19 +136,47 @@ exports.googleMobileAuth = (req, res) => {
     '&response_type=code' +
     `&scope=${encodeURIComponent('profile email')}` +
     '&access_type=offline' +
-    '&prompt=consent';
+    '&prompt=consent' +
+    `&state=${encodeURIComponent(state)}`;
 
   res.redirect(authUrl);
 };
 
+// Helper to send an HTML page that redirects to the app's custom scheme
+const sendAppRedirect = (res, deepLink) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FitAI Login</title></head><body style="background:#0D0D1A;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;color:#fff;text-align:center"><div><p style="font-size:18px">Redirecting to FitAI...</p><p style="font-size:14px;color:#888">If the app doesn't open, <a href="${deepLink}" style="color:#6C63FF">tap here</a></p></div><script>window.location.href="${deepLink}";</script></body></html>`);
+};
+
 // @desc    Google OAuth callback (handles code exchange and redirects to app)
 exports.googleCallback = async (req, res) => {
+  // Parse the app redirect URL from state
+  let appRedirect = 'fitai://auth';
+  try {
+    if (req.query.state) {
+      const stateData = JSON.parse(Buffer.from(req.query.state, 'base64').toString());
+      if (stateData.redirect) appRedirect = stateData.redirect;
+    }
+  } catch (e) { /* use default */ }
+
+  // Build redirect helper with the correct app URL
+  const buildRedirect = (params) => {
+    const separator = appRedirect.includes('?') ? '&' : '?';
+    return `${appRedirect}${separator}${params}`;
+  };
+
   try {
     const { code } = req.query;
-    if (!code) return res.status(400).send('No authorization code received');
+    if (!code) return sendAppRedirect(res, buildRedirect('error=no_code'));
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!GOOGLE_CLIENT_SECRET) {
+      console.error('GOOGLE_CLIENT_SECRET is not set');
+      return sendAppRedirect(res, buildRedirect('error=server_config'));
+    }
+
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const callbackUrl = `${protocol}://${req.get('host')}/api/auth/google/callback`;
 
@@ -162,7 +194,8 @@ exports.googleCallback = async (req, res) => {
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
-      return res.redirect('fitai://auth?error=token_failed');
+      console.error('Google token exchange failed:', tokenData);
+      return sendAppRedirect(res, buildRedirect('error=token_failed'));
     }
 
     const userRes = await fetch('https://www.googleapis.com/userinfo/v2/me', {
@@ -186,10 +219,10 @@ exports.googleCallback = async (req, res) => {
       isProfileComplete: user.isProfileComplete, isPremium: user.isPremium,
     }));
 
-    res.redirect(`fitai://auth?token=${jwtToken}&user=${userData}`);
+    sendAppRedirect(res, buildRedirect(`token=${jwtToken}&user=${userData}`));
   } catch (error) {
     console.error('Google callback error:', error);
-    res.redirect('fitai://auth?error=server_error');
+    sendAppRedirect(res, buildRedirect('error=server_error'));
   }
 };
 

@@ -26,7 +26,9 @@ exports.getToday = async (req, res, next) => {
 
     let tracking = await Tracking.findOne({ user: req.user.id, date: today });
     if (!tracking) {
-      tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal: req.user.dailyCalories || 2000, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8 };
+      const isWeightLoss = req.user.fitnessGoal === 'weight_loss' || req.user.fitnessGoal === 'fat_loss';
+      const caloriesGoal = isWeightLoss ? (req.user.bmr || 1500) : (req.user.dailyCalories || 2000);
+      tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8 };
     }
 
     res.json({ success: true, data: tracking });

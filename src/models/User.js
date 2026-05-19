@@ -42,6 +42,7 @@ const userSchema = new mongoose.Schema({
   isProfileComplete: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   fcmToken: { type: String },
+  expoPushToken: { type: String },
   otp: { type: String, select: false },
   otpExpiry: { type: Date, select: false },
 

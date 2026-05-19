@@ -1,4 +1,23 @@
 const Notification = require('../models/Notification');
+const User = require('../models/User');
+
+const sendExpoPush = async (pushTokens, title, body, data = {}) => {
+  const messages = pushTokens
+    .filter(t => t && t.startsWith('ExponentPushToken'))
+    .map(token => ({ to: token, sound: 'default', title, body, data }));
+
+  if (messages.length === 0) return;
+
+  try {
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(messages),
+    });
+  } catch (e) {
+    console.log('Expo push error:', e.message);
+  }
+};
 
 // @desc    Get user notifications
 exports.getNotifications = async (req, res, next) => {
@@ -73,6 +92,19 @@ exports.getUnreadCount = async (req, res, next) => {
   }
 };
 
+// @desc    Save push token
+exports.savePushToken = async (req, res, next) => {
+  try {
+    const { pushToken } = req.body;
+    if (!pushToken) return res.status(400).json({ success: false, message: 'Provide pushToken' });
+
+    await User.findByIdAndUpdate(req.user.id, { expoPushToken: pushToken });
+    res.json({ success: true, message: 'Push token saved' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Send notification (internal helper, also used by admin)
 exports.sendNotification = async (req, res, next) => {
   try {
@@ -82,6 +114,12 @@ exports.sendNotification = async (req, res, next) => {
     }
 
     const notification = await Notification.create({ user: userId, title, body, type: type || 'tip', data });
+
+    const targetUser = await User.findById(userId).select('expoPushToken');
+    if (targetUser?.expoPushToken) {
+      await sendExpoPush([targetUser.expoPushToken], title, body, data);
+    }
+
     res.status(201).json({ success: true, data: notification });
   } catch (error) {
     next(error);
@@ -105,8 +143,7 @@ exports.sendDailyTip = async (req, res, next) => {
     ];
 
     const tip = tips[Math.floor(Math.random() * tips.length)];
-    const User = require('../models/User');
-    const users = await User.find({ isActive: true }).select('_id');
+    const users = await User.find({ isActive: true }).select('_id expoPushToken');
 
     const notifications = users.map(u => ({
       user: u._id,
@@ -116,7 +153,13 @@ exports.sendDailyTip = async (req, res, next) => {
     }));
 
     await Notification.insertMany(notifications);
-    res.json({ success: true, message: `Tip sent to ${users.length} users`, tip });
+
+    const pushTokens = users.map(u => u.expoPushToken).filter(Boolean);
+    if (pushTokens.length > 0) {
+      await sendExpoPush(pushTokens, tip.title, tip.body);
+    }
+
+    res.json({ success: true, message: `Tip sent to ${users.length} users (${pushTokens.length} push)`, tip });
   } catch (error) {
     next(error);
   }

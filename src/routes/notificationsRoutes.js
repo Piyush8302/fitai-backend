@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getNotifications, markRead, markAllRead, deleteNotification, getUnreadCount, sendNotification, sendDailyTip } = require('../controllers/notificationsController');
+const { getNotifications, markRead, markAllRead, deleteNotification, getUnreadCount, sendNotification, sendDailyTip, savePushToken } = require('../controllers/notificationsController');
 const { protect, admin } = require('../middleware/auth');
 
 /**
@@ -112,6 +112,7 @@ router.delete('/:id', protect, deleteNotification);
  *     responses:
  *       201: { description: Notification sent }
  */
+router.post('/push-token', protect, savePushToken);
 router.post('/send', protect, admin, sendNotification);
 
 /**
