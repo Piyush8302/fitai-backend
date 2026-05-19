@@ -282,7 +282,12 @@ exports.forgotPassword = async (req, res, next) => {
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
 
-    await sendOtpEmail(email, otp);
+    try {
+      await sendOtpEmail(email, otp);
+    } catch (emailErr) {
+      console.error('Email send failed:', emailErr.message);
+      return res.status(500).json({ success: false, message: 'Failed to send email. Please try again.' });
+    }
 
     res.json({ success: true, message: 'Reset OTP sent to email', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
   } catch (error) {
