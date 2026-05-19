@@ -58,7 +58,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: '🏋️ FitAI Backend API is running!',
-    version: '2.0.0',
+    version: '2.1.0',
     docs: '/api-docs',
     endpoints: {
       auth: '/api/auth',
