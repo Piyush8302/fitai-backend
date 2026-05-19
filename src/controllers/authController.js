@@ -122,8 +122,8 @@ exports.googleLogin = async (req, res, next) => {
 // @desc    Google OAuth redirect (for mobile app)
 exports.googleMobileAuth = (req, res) => {
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
-  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+  const callbackUrl = `${protocol}://${req.get('host')}/api/auth/google/callback`;
 
   const authUrl =
     'https://accounts.google.com/o/oauth2/v2/auth?' +
@@ -145,7 +145,8 @@ exports.googleCallback = async (req, res) => {
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-    const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const callbackUrl = `${protocol}://${req.get('host')}/api/auth/google/callback`;
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
