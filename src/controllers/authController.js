@@ -1,4 +1,6 @@
 const User = require('../models/User');
+const { sendOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
+const { sendOtpSms } = require('../utils/smsService');
 
 // @desc    Register user
 exports.register = async (req, res, next) => {
@@ -10,6 +12,8 @@ exports.register = async (req, res, next) => {
 
     const user = await User.create({ name, email, password, phone });
     const token = user.getSignedToken();
+
+    sendWelcomeEmail(email, name).catch(err => console.error('Welcome email failed:', err.message));
 
     res.status(201).json({
       success: true,
@@ -67,8 +71,7 @@ exports.sendOtp = async (req, res, next) => {
     user.otpExpiry = otpExpiry;
     await user.save();
 
-    // TODO: Send OTP via SMS service
-    console.log(`📱 OTP for ${phone}: ${otp}`);
+    await sendOtpSms(phone, otp);
 
     res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
   } catch (error) {
@@ -279,8 +282,7 @@ exports.forgotPassword = async (req, res, next) => {
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
 
-    // TODO: Send OTP via email service
-    console.log(`📧 Password reset OTP for ${email}: ${otp}`);
+    await sendOtpEmail(email, otp);
 
     res.json({ success: true, message: 'Reset OTP sent to email', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
   } catch (error) {
