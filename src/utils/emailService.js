@@ -1,45 +1,37 @@
-const nodemailer = require('nodemailer');
-
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-  });
-};
+// Email service using Brevo (Sendinblue) HTTP API
+// Works on Render free tier (no SMTP needed)
 
 const sendEmail = async (to, subject, html) => {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  const apiKey = process.env.BREVO_API_KEY;
+
+  if (!apiKey) {
     console.log(`Email not configured. Would send "${subject}" to ${to}`);
     return;
   }
 
-  const transporter = createTransporter();
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'api-key': apiKey,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'FitAI', email: process.env.EMAIL_USER || 'noreply@fitai.com' },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+    }),
+  });
 
-  try {
-    await transporter.verify();
-    console.log('SMTP connection verified');
-  } catch (verifyErr) {
-    console.error('SMTP verify failed:', verifyErr.message);
-    throw verifyErr;
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error('Brevo email error:', JSON.stringify(data));
+    throw new Error(data.message || 'Email send failed');
   }
 
-  const mailOptions = {
-    from: `"FitAI" <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    html,
-  };
-
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`Email sent to ${to}, messageId: ${info.messageId}`);
+  console.log(`Email sent to ${to}, messageId: ${data.messageId}`);
 };
 
 exports.sendOtpEmail = async (email, otp) => {
