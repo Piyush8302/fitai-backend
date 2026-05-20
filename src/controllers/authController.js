@@ -167,9 +167,23 @@ exports.googleMobileAuth = (req, res) => {
 };
 
 // Helper to send an HTML page that redirects to the app's custom scheme
-const sendAppRedirect = (res, deepLink) => {
+const sendAppRedirect = (res, deepLink, req) => {
+  // For Android standalone app, use intent:// URI which works reliably in Custom Chrome Tabs
+  const userAgent = (req && req.headers['user-agent']) || '';
+  const isAndroid = userAgent.toLowerCase().includes('android');
+
+  // Build Android intent URI: intent://auth?params#Intent;scheme=fitai;package=com.piyush.fitai;end
+  let intentUri = deepLink;
+  if (isAndroid && deepLink.startsWith('fitai://')) {
+    const pathAndQuery = deepLink.replace('fitai://', '');
+    intentUri = `intent://${pathAndQuery}#Intent;scheme=fitai;package=com.piyush.fitai;end`;
+  }
+
   res.setHeader('Content-Type', 'text/html');
-  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FitAI Login</title></head><body style="background:#0D0D1A;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;color:#fff;text-align:center"><div><p style="font-size:18px">Redirecting to FitAI...</p><p style="font-size:14px;color:#888">If the app doesn't open, <a href="${deepLink}" style="color:#6C63FF">tap here</a></p></div><script>window.location.href="${deepLink}";</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FitAI Login</title></head><body style="background:#0D0D1A;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;color:#fff;text-align:center"><div><p style="font-size:18px">Redirecting to FitAI...</p><p style="font-size:14px;color:#888">If the app doesn't open, <a href="${intentUri}" style="color:#6C63FF">tap here</a></p></div><script>
+try{window.location.href="${intentUri}";}catch(e){}
+setTimeout(function(){try{window.location.href="${deepLink}";}catch(e){}},500);
+</script></body></html>`);
 };
 
 // @desc    Google OAuth callback (handles code exchange and redirects to app)
@@ -191,14 +205,14 @@ exports.googleCallback = async (req, res) => {
 
   try {
     const { code } = req.query;
-    if (!code) return sendAppRedirect(res, buildRedirect('error=no_code'));
+    if (!code) return sendAppRedirect(res, buildRedirect('error=no_code'), req);
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '501212222055-10earp0vg4ecv3k7427kkg67soooqd3m.apps.googleusercontent.com';
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
     if (!GOOGLE_CLIENT_SECRET) {
       console.error('GOOGLE_CLIENT_SECRET is not set');
-      return sendAppRedirect(res, buildRedirect('error=server_config'));
+      return sendAppRedirect(res, buildRedirect('error=server_config'), req);
     }
 
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
@@ -243,10 +257,10 @@ exports.googleCallback = async (req, res) => {
       isProfileComplete: user.isProfileComplete, isPremium: user.isPremium,
     }));
 
-    sendAppRedirect(res, buildRedirect(`token=${jwtToken}&user=${userData}`));
+    sendAppRedirect(res, buildRedirect(`token=${jwtToken}&user=${userData}`), req);
   } catch (error) {
     console.error('Google callback error:', error);
-    sendAppRedirect(res, buildRedirect('error=server_error'));
+    sendAppRedirect(res, buildRedirect('error=server_error'), req);
   }
 };
 
