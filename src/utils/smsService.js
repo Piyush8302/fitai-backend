@@ -21,14 +21,15 @@ exports.sendOtpSms = async (phone, otp) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        route: 'otp',
-        variables_values: otp,
+        route: 'q',
+        message: `Your FitAI OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.`,
         flash: 0,
         numbers: cleanPhone,
       }),
     });
 
     const data = await response.json();
+    console.log('Fast2SMS response:', JSON.stringify(data));
 
     if (data.return) {
       console.log(`✅ OTP sent to ${cleanPhone}`);
