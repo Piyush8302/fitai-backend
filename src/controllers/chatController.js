@@ -1,9 +1,10 @@
 const ChatMessage = require('../models/ChatMessage');
 
-// Gemini AI integration
-const callGeminiAI = async (message, user, context) => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+// AI integration (Groq / Gemini)
+const callAI = async (message, user, context) => {
+  const groqKey = process.env.GROQ_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!groqKey && !geminiKey) return null;
 
   const name = user.name?.split(' ')[0] || 'User';
   const systemPrompt = `You are FitAI, a friendly and knowledgeable AI fitness & health coach inside a fitness app.
@@ -29,49 +30,72 @@ Rules:
 - Use the user's name naturally in responses
 - Give specific numbers (calories, protein, sets, reps) when possible`;
 
-  const contents = [];
-
-  // Add conversation history
+  // Build messages array (OpenAI format - works for Groq)
+  const messages = [{ role: 'system', content: systemPrompt }];
   context.forEach(c => {
-    contents.push({
-      role: c.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: c.message }],
-    });
+    messages.push({ role: c.role === 'assistant' ? 'assistant' : 'user', content: c.message });
   });
+  messages.push({ role: 'user', content: message });
 
-  // Add current message
-  contents.push({ role: 'user', parts: [{ text: message }] });
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
+  // Try Groq first (fast, free)
+  if (groqKey) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents,
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 500,
-          },
+          model: 'llama-3.1-8b-instant',
+          messages,
+          temperature: 0.7,
+          max_tokens: 500,
         }),
+      });
+      const data = await response.json();
+      console.log('Groq status:', response.status);
+      if (response.ok && data.choices?.[0]?.message?.content) {
+        console.log('Using Groq AI response');
+        return data.choices[0].message.content;
       }
-    );
-
-    const data = await response.json();
-    console.log('Gemini status:', response.status);
-    if (!response.ok) {
-      console.error('Gemini API failed:', JSON.stringify(data));
-      return null;
+      console.error('Groq error:', JSON.stringify(data?.error || data));
+    } catch (err) {
+      console.error('Groq API error:', err.message);
     }
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    console.log('Gemini reply received:', reply ? 'yes' : 'no');
-    return reply || null;
-  } catch (err) {
-    console.error('Gemini API error:', err.message);
-    return null;
   }
+
+  // Fallback to Gemini
+  if (geminiKey) {
+    try {
+      const contents = [];
+      context.forEach(c => {
+        contents.push({ role: c.role === 'assistant' ? 'model' : 'user', parts: [{ text: c.message }] });
+      });
+      contents.push({ role: 'user', parts: [{ text: message }] });
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: { temperature: 0.7, maxOutputTokens: 500 },
+          }),
+        }
+      );
+      const data = await response.json();
+      console.log('Gemini status:', response.status);
+      if (response.ok) {
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (reply) { console.log('Using Gemini AI response'); return reply; }
+      }
+      console.error('Gemini error:', JSON.stringify(data?.error || data));
+    } catch (err) {
+      console.error('Gemini API error:', err.message);
+    }
+  }
+
+  return null;
 };
 
 // @desc    Send message to AI Health Assistant
@@ -89,13 +113,11 @@ exports.sendMessage = async (req, res, next) => {
 
     await ChatMessage.create({ user: user.id, role: 'user', message });
 
-    // Try Gemini AI first, fallback to rule-based
-    let aiResponse = await callGeminiAI(message, user, context);
+    // Try AI API first (Groq/Gemini), fallback to rule-based
+    let aiResponse = await callAI(message, user, context);
     if (!aiResponse) {
-      console.log('Gemini failed, using rule-based fallback');
+      console.log('AI API failed, using rule-based fallback');
       aiResponse = generateSmartResponse(message, user, context);
-    } else {
-      console.log('Using Gemini AI response');
     }
 
     await ChatMessage.create({ user: user.id, role: 'assistant', message: aiResponse });
