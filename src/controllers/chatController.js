@@ -60,7 +60,13 @@ Rules:
     );
 
     const data = await response.json();
+    console.log('Gemini status:', response.status);
+    if (!response.ok) {
+      console.error('Gemini API failed:', JSON.stringify(data));
+      return null;
+    }
     const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    console.log('Gemini reply received:', reply ? 'yes' : 'no');
     return reply || null;
   } catch (err) {
     console.error('Gemini API error:', err.message);
@@ -86,7 +92,10 @@ exports.sendMessage = async (req, res, next) => {
     // Try Gemini AI first, fallback to rule-based
     let aiResponse = await callGeminiAI(message, user, context);
     if (!aiResponse) {
+      console.log('Gemini failed, using rule-based fallback');
       aiResponse = generateSmartResponse(message, user, context);
+    } else {
+      console.log('Using Gemini AI response');
     }
 
     await ChatMessage.create({ user: user.id, role: 'assistant', message: aiResponse });
