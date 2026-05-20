@@ -3,25 +3,34 @@ const nodemailer = require('nodemailer');
 const createTransporter = () => {
   return nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
+    port: 465,
+    secure: true,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
+    tls: {
+      rejectUnauthorized: false,
+    },
   });
 };
 
 const sendEmail = async (to, subject, html) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.log(`📧 Email not configured. Would send "${subject}" to ${to}`);
+    console.log(`Email not configured. Would send "${subject}" to ${to}`);
     return;
   }
 
   const transporter = createTransporter();
+
+  try {
+    await transporter.verify();
+    console.log('SMTP connection verified');
+  } catch (verifyErr) {
+    console.error('SMTP verify failed:', verifyErr.message);
+    throw verifyErr;
+  }
+
   const mailOptions = {
     from: `"FitAI" <${process.env.EMAIL_USER}>`,
     to,
@@ -29,8 +38,8 @@ const sendEmail = async (to, subject, html) => {
     html,
   };
 
-  await transporter.sendMail(mailOptions);
-  console.log(`✅ Email sent to ${to}`);
+  const info = await transporter.sendMail(mailOptions);
+  console.log(`Email sent to ${to}, messageId: ${info.messageId}`);
 };
 
 exports.sendOtpEmail = async (email, otp) => {
