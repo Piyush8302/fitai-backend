@@ -1,10 +1,20 @@
 const Tracking = require('../models/Tracking');
 
+// Helper: Get today's date in IST (UTC+5:30) at midnight
+const getTodayIST = () => {
+  const now = new Date();
+  // Convert to IST by adding 5:30 hours
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istNow = new Date(now.getTime() + istOffset);
+  // Set to midnight IST (but store as UTC equivalent)
+  istNow.setUTCHours(0, 0, 0, 0);
+  return istNow;
+};
+
 // @desc    Log/update daily tracking
 exports.logDaily = async (req, res, next) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getTodayIST();
 
     const tracking = await Tracking.findOneAndUpdate(
       { user: req.user.id, date: today },
@@ -21,14 +31,13 @@ exports.logDaily = async (req, res, next) => {
 // @desc    Get today's tracking
 exports.getToday = async (req, res, next) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getTodayIST();
 
     let tracking = await Tracking.findOne({ user: req.user.id, date: today });
     if (!tracking) {
       const isWeightLoss = req.user.fitnessGoal === 'weight_loss' || req.user.fitnessGoal === 'fat_loss';
       const caloriesGoal = isWeightLoss ? (req.user.bmr || 1500) : (req.user.dailyCalories || 2000);
-      tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8 };
+      tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8, mealsLogged: [], workoutMinutes: 0 };
     }
 
     res.json({ success: true, data: tracking });
@@ -40,8 +49,7 @@ exports.getToday = async (req, res, next) => {
 // @desc    Add water intake
 exports.addWater = async (req, res, next) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getTodayIST();
 
     const tracking = await Tracking.findOneAndUpdate(
       { user: req.user.id, date: today },
@@ -58,8 +66,7 @@ exports.addWater = async (req, res, next) => {
 // @desc    Log meal
 exports.logMeal = async (req, res, next) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getTodayIST();
 
     const { mealType, items, totalCalories } = req.body;
 
@@ -82,11 +89,9 @@ exports.logMeal = async (req, res, next) => {
 // @desc    Get weekly report
 exports.getWeeklyReport = async (req, res, next) => {
   try {
-    const endDate = new Date();
-    endDate.setHours(23, 59, 59, 999);
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 7);
-    startDate.setHours(0, 0, 0, 0);
+    const today = getTodayIST();
+    const endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000 - 1); // end of today IST
+    const startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); // 7 days ago IST
 
     const records = await Tracking.find({
       user: req.user.id,
@@ -113,9 +118,9 @@ exports.getWeeklyReport = async (req, res, next) => {
 // @desc    Get monthly progress
 exports.getMonthlyProgress = async (req, res, next) => {
   try {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 30);
+    const today = getTodayIST();
+    const endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000 - 1);
+    const startDate = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const records = await Tracking.find({
       user: req.user.id,
