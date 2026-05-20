@@ -105,18 +105,20 @@ exports.savePushToken = async (req, res, next) => {
   }
 };
 
-// @desc    Send notification (admin - single user or broadcast to all)
+// @desc    Send notification (admin - by userId/email/phone or broadcast to all)
 exports.sendNotification = async (req, res, next) => {
   try {
-    const { userId, title, body, message, type, data, targetAudience } = req.body;
+    const { userId, email, phone, title, body, message, type, data, targetAudience } = req.body;
     const notifBody = body || message;
     if (!title || !notifBody) {
       return res.status(400).json({ success: false, message: 'Provide title and body/message' });
     }
 
+    const notifType = type || 'info';
+
     if (targetAudience === 'all') {
       const users = await User.find({ isActive: { $ne: false } }).select('_id expoPushToken');
-      const notifications = users.map(u => ({ user: u._id, title, body: notifBody, type: type || 'info' }));
+      const notifications = users.map(u => ({ user: u._id, title, body: notifBody, type: notifType }));
       await Notification.insertMany(notifications);
 
       const pushTokens = users.map(u => u.expoPushToken).filter(Boolean);
@@ -125,11 +127,21 @@ exports.sendNotification = async (req, res, next) => {
       return res.status(201).json({ success: true, message: `Sent to ${users.length} users (${pushTokens.length} push)` });
     }
 
-    if (!userId) return res.status(400).json({ success: false, message: 'Provide userId or set targetAudience to "all"' });
+    let targetUser;
+    if (userId) {
+      targetUser = await User.findById(userId).select('_id expoPushToken');
+    } else if (email) {
+      targetUser = await User.findOne({ email }).select('_id expoPushToken');
+    } else if (phone) {
+      targetUser = await User.findOne({ phone }).select('_id expoPushToken');
+    } else {
+      return res.status(400).json({ success: false, message: 'Provide userId, email, phone, or set targetAudience to "all"' });
+    }
 
-    const notification = await Notification.create({ user: userId, title, body: notifBody, type: type || 'tip', data });
-    const targetUser = await User.findById(userId).select('expoPushToken');
-    if (targetUser?.expoPushToken) await sendExpoPush([targetUser.expoPushToken], title, notifBody, data);
+    if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const notification = await Notification.create({ user: targetUser._id, title, body: notifBody, type: notifType, data });
+    if (targetUser.expoPushToken) await sendExpoPush([targetUser.expoPushToken], title, notifBody, data);
 
     res.status(201).json({ success: true, data: notification });
   } catch (error) {
