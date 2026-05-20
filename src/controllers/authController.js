@@ -1,5 +1,5 @@
 const User = require('../models/User');
-const { sendOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
+const { sendOtpEmail, sendLoginOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { sendOtpSms } = require('../utils/smsService');
 
 // @desc    Register user
@@ -83,7 +83,7 @@ exports.sendOtp = async (req, res, next) => {
 
     if (email) {
       try {
-        await sendOtpEmail(email, otp);
+        await sendLoginOtpEmail(email, otp);
       } catch (emailErr) {
         console.error('Email OTP send failed:', emailErr.message);
         return res.status(500).json({ success: false, message: 'Failed to send OTP email' });

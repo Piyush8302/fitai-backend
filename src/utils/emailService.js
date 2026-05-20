@@ -34,25 +34,39 @@ const sendEmail = async (to, subject, html) => {
   console.log(`Email sent to ${to}, messageId: ${data.messageId}`);
 };
 
-exports.sendOtpEmail = async (email, otp) => {
-  const html = `
-    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
-      <div style="text-align:center;margin-bottom:24px">
-        <span style="font-size:48px">&#127947;</span>
-        <h1 style="color:#6C63FF;margin:8px 0 0">FitAI</h1>
-      </div>
-      <h2 style="text-align:center;color:#fff;margin-bottom:8px">Password Reset OTP</h2>
-      <p style="text-align:center;color:#888;font-size:14px">Use the code below to reset your password. It expires in 10 minutes.</p>
-      <div style="background:#1A1A2E;border-radius:10px;padding:20px;text-align:center;margin:24px 0">
-        <span style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#6C63FF">${otp}</span>
-      </div>
-      <p style="text-align:center;color:#888;font-size:12px">If you didn't request this, please ignore this email.</p>
-      <hr style="border:none;border-top:1px solid #333;margin:24px 0">
-      <p style="text-align:center;color:#555;font-size:11px">FitAI - Your AI Fitness Companion</p>
+const otpTemplate = (title, description, otp) => `
+  <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
+    <div style="text-align:center;margin-bottom:24px">
+      <span style="font-size:48px">&#127947;</span>
+      <h1 style="color:#6C63FF;margin:8px 0 0">FitAI</h1>
     </div>
-  `;
+    <h2 style="text-align:center;color:#fff;margin-bottom:8px">${title}</h2>
+    <p style="text-align:center;color:#888;font-size:14px">${description}</p>
+    <div style="background:#1A1A2E;border-radius:10px;padding:20px;text-align:center;margin:24px 0">
+      <span style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#6C63FF">${otp}</span>
+    </div>
+    <p style="text-align:center;color:#888;font-size:12px">If you didn't request this, please ignore this email.</p>
+    <hr style="border:none;border-top:1px solid #333;margin:24px 0">
+    <p style="text-align:center;color:#555;font-size:11px">FitAI - Your AI Fitness Companion</p>
+  </div>
+`;
 
+exports.sendOtpEmail = async (email, otp) => {
+  const html = otpTemplate(
+    'Password Reset OTP',
+    'Use the code below to reset your password. It expires in 10 minutes.',
+    otp
+  );
   await sendEmail(email, 'FitAI - Password Reset OTP', html);
+};
+
+exports.sendLoginOtpEmail = async (email, otp) => {
+  const html = otpTemplate(
+    'Login OTP',
+    'Use the code below to login to your FitAI account. It expires in 10 minutes.',
+    otp
+  );
+  await sendEmail(email, 'FitAI - Login OTP', html);
 };
 
 exports.sendWelcomeEmail = async (email, name) => {
