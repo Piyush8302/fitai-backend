@@ -3,10 +3,15 @@
 // Set FAST2SMS_API_KEY in your environment variables
 
 exports.sendOtpSms = async (phone, otp) => {
+  if (!phone) {
+    console.log('SMS skipped: no phone number provided');
+    return { success: false, error: 'No phone number' };
+  }
+
   const apiKey = process.env.FAST2SMS_API_KEY;
 
   if (!apiKey) {
-    console.log(`📱 SMS service not configured. OTP for ${phone}: ${otp}`);
+    console.log(`SMS service not configured. OTP for ${phone}: ${otp}`);
     return { success: true, fallback: true };
   }
 
