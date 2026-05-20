@@ -105,20 +105,31 @@ exports.savePushToken = async (req, res, next) => {
   }
 };
 
-// @desc    Send notification (internal helper, also used by admin)
+// @desc    Send notification (admin - single user or broadcast to all)
 exports.sendNotification = async (req, res, next) => {
   try {
-    const { userId, title, body, type, data } = req.body;
-    if (!userId || !title || !body) {
-      return res.status(400).json({ success: false, message: 'Provide userId, title, and body' });
+    const { userId, title, body, message, type, data, targetAudience } = req.body;
+    const notifBody = body || message;
+    if (!title || !notifBody) {
+      return res.status(400).json({ success: false, message: 'Provide title and body/message' });
     }
 
-    const notification = await Notification.create({ user: userId, title, body, type: type || 'tip', data });
+    if (targetAudience === 'all') {
+      const users = await User.find({ isActive: { $ne: false } }).select('_id expoPushToken');
+      const notifications = users.map(u => ({ user: u._id, title, body: notifBody, type: type || 'info' }));
+      await Notification.insertMany(notifications);
 
+      const pushTokens = users.map(u => u.expoPushToken).filter(Boolean);
+      if (pushTokens.length > 0) await sendExpoPush(pushTokens, title, notifBody, data);
+
+      return res.status(201).json({ success: true, message: `Sent to ${users.length} users (${pushTokens.length} push)` });
+    }
+
+    if (!userId) return res.status(400).json({ success: false, message: 'Provide userId or set targetAudience to "all"' });
+
+    const notification = await Notification.create({ user: userId, title, body: notifBody, type: type || 'tip', data });
     const targetUser = await User.findById(userId).select('expoPushToken');
-    if (targetUser?.expoPushToken) {
-      await sendExpoPush([targetUser.expoPushToken], title, body, data);
-    }
+    if (targetUser?.expoPushToken) await sendExpoPush([targetUser.expoPushToken], title, notifBody, data);
 
     res.status(201).json({ success: true, data: notification });
   } catch (error) {
