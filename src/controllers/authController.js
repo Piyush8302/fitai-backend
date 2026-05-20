@@ -55,36 +55,57 @@ exports.login = async (req, res, next) => {
   }
 };
 
-// @desc    Send OTP
+// @desc    Send OTP (phone or email)
 exports.sendOtp = async (req, res, next) => {
   try {
-    const { phone } = req.body;
+    const { phone, email } = req.body;
+    if (!phone && !email) return res.status(400).json({ success: false, message: 'Provide phone or email' });
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-    let user = await User.findOne({ phone });
-    if (!user) {
-      user = await User.create({ phone, name: 'User', email: `${phone}@fitai.temp`, authProvider: 'otp' });
+    let user;
+    if (email) {
+      user = await User.findOne({ email });
+      if (!user) {
+        user = await User.create({ email, name: 'User', authProvider: 'otp' });
+      }
+    } else {
+      user = await User.findOne({ phone });
+      if (!user) {
+        user = await User.create({ phone, name: 'User', email: `${phone}@fitai.temp`, authProvider: 'otp' });
+      }
     }
 
     user.otp = otp;
     user.otpExpiry = otpExpiry;
     await user.save();
 
-    await sendOtpSms(phone, otp);
-
-    res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+    if (email) {
+      try {
+        await sendOtpEmail(email, otp);
+      } catch (emailErr) {
+        console.error('Email OTP send failed:', emailErr.message);
+        return res.status(500).json({ success: false, message: 'Failed to send OTP email' });
+      }
+      res.json({ success: true, message: 'OTP sent to email' });
+    } else {
+      await sendOtpSms(phone, otp);
+      res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+    }
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Verify OTP
+// @desc    Verify OTP (phone or email)
 exports.verifyOtp = async (req, res, next) => {
   try {
-    const { phone, otp } = req.body;
+    const { phone, email, otp } = req.body;
+    if (!phone && !email) return res.status(400).json({ success: false, message: 'Provide phone or email' });
 
-    const user = await User.findOne({ phone }).select('+otp +otpExpiry');
+    const query = email ? { email } : { phone };
+    const user = await User.findOne(query).select('+otp +otpExpiry');
     if (!user) return res.status(400).json({ success: false, message: 'User not found' });
 
     if (user.otp !== otp || user.otpExpiry < Date.now()) {
@@ -96,7 +117,7 @@ exports.verifyOtp = async (req, res, next) => {
     await user.save();
 
     const token = user.getSignedToken();
-    res.json({ success: true, token, user: { id: user._id, name: user.name, phone: user.phone, isProfileComplete: user.isProfileComplete } });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete } });
   } catch (error) {
     next(error);
   }
