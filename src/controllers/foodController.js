@@ -1,8 +1,23 @@
+// Diet preference filtering helpers
+const DAIRY_IDS = new Set([4, 5, 10, 19, 21, 24, 25, 111, 112, 122, 205, 206, 207]);
+const EGG_IDS = new Set([103]);
+
+function filterByDietPref(foods, dietPref) {
+  if (!dietPref || dietPref === 'non_veg') return foods;
+  if (dietPref === 'veg') return foods.filter(f => f.isVeg === true);
+  if (dietPref === 'vegan') return foods.filter(f => f.isVeg === true && !DAIRY_IDS.has(f.id));
+  if (dietPref === 'eggetarian') return foods.filter(f => f.isVeg === true || EGG_IDS.has(f.id));
+  return foods;
+}
+
 // @desc    Search food database
 exports.searchFood = async (req, res, next) => {
   try {
-    const { q, category, source, page = 1, limit = 20 } = req.query;
+    const { q, category, source, dietPref, page = 1, limit = 20 } = req.query;
     let results = FOOD_DATABASE;
+
+    // Diet preference filter (veg/non_veg/vegan/eggetarian)
+    if (dietPref) results = filterByDietPref(results, dietPref);
 
     if (q) {
       const query = q.toLowerCase();
@@ -39,8 +54,11 @@ exports.getFoodById = async (req, res, next) => {
 // @desc    Get food categories
 exports.getFoodCategories = async (req, res, next) => {
   try {
-    const categories = [...new Set(FOOD_DATABASE.map(f => f.category))];
-    const data = categories.map(c => ({ name: c, count: FOOD_DATABASE.filter(f => f.category === c).length }));
+    const { dietPref } = req.query;
+    let db = FOOD_DATABASE;
+    if (dietPref) db = filterByDietPref(db, dietPref);
+    const categories = [...new Set(db.map(f => f.category))];
+    const data = categories.map(c => ({ name: c, count: db.filter(f => f.category === c).length }));
     res.json({ success: true, data });
   } catch (error) {
     next(error);

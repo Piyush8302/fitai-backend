@@ -147,15 +147,73 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
     ],
   };
 
+  // Vegan replacements (no dairy: no paneer, curd, ghee, raita, whey, buttermilk)
+  const veganMeals = {
+    breakfast: vegMeals.breakfast, // all already vegan-safe
+    mid_morning: [
+      { name: 'Mixed Fruits', quantity: '1 bowl', calories: 100, protein: 1, carbs: 25, fat: 0, fiber: 4 },
+      { name: 'Roasted Chana', quantity: '50g', calories: 180, protein: 10, carbs: 28, fat: 3, fiber: 6 },
+      { name: 'Banana + Almonds', quantity: '1 + 10 pcs', calories: 160, protein: 5, carbs: 28, fat: 6, fiber: 3 },
+      { name: 'Coconut Water', quantity: '1 glass', calories: 46, protein: 0.5, carbs: 11, fat: 0, fiber: 0 },
+    ],
+    lunch: [
+      { name: 'Dal Rice + Salad', quantity: '1 plate', calories: 450, protein: 15, carbs: 65, fat: 10, fiber: 8 },
+      { name: 'Rajma Chawal', quantity: '1 plate', calories: 420, protein: 16, carbs: 60, fat: 8, fiber: 10 },
+      { name: 'Chole + Roti + Salad', quantity: '1 plate', calories: 480, protein: 18, carbs: 58, fat: 12, fiber: 9 },
+      { name: 'Tofu Curry + 2 Roti', quantity: '1 plate', calories: 400, protein: 20, carbs: 42, fat: 14, fiber: 5 },
+      { name: 'Soya Chunk Curry + Rice', quantity: '1 plate', calories: 440, protein: 28, carbs: 55, fat: 10, fiber: 6 },
+    ],
+    evening_snack: vegMeals.evening_snack, // all vegan-safe
+    dinner: [
+      { name: 'Roti + Mixed Veg', quantity: '2 roti + 1 bowl', calories: 350, protein: 10, carbs: 48, fat: 10, fiber: 8 },
+      { name: 'Dalia (Broken Wheat)', quantity: '1 bowl', calories: 280, protein: 8, carbs: 45, fat: 5, fiber: 7 },
+      { name: 'Tofu Stir Fry + Rice', quantity: '1 plate', calories: 380, protein: 18, carbs: 48, fat: 12, fiber: 4 },
+      { name: 'Masoor Dal + 2 Roti', quantity: '1 bowl + 2 roti', calories: 360, protein: 14, carbs: 50, fat: 6, fiber: 6 },
+    ],
+    pre_workout: vegMeals.pre_workout, // banana + black coffee = vegan
+    post_workout: [
+      { name: 'Soy Protein Shake', quantity: '1 scoop', calories: 130, protein: 22, carbs: 5, fat: 2, fiber: 1 },
+      { name: 'Tofu Scramble', quantity: '100g', calories: 180, protein: 16, carbs: 4, fat: 10, fiber: 1 },
+    ],
+  };
+
+  // Egg-only addons for eggetarian (no meat/fish)
+  const eggAddons = {
+    breakfast: [
+      { name: 'Egg Bhurji + Toast', quantity: '2 eggs + 1 toast', calories: 280, protein: 18, carbs: 20, fat: 14, fiber: 1 },
+      { name: 'Boiled Eggs', quantity: '3 pcs', calories: 210, protein: 18, carbs: 0, fat: 15, fiber: 0 },
+    ],
+    lunch: [
+      { name: 'Egg Fried Rice', quantity: '1 plate', calories: 420, protein: 16, carbs: 55, fat: 14, fiber: 2 },
+    ],
+    dinner: [
+      { name: 'Egg Curry + Roti', quantity: '2 eggs + 2 roti', calories: 400, protein: 20, carbs: 42, fat: 16, fiber: 3 },
+    ],
+    post_workout: [
+      { name: 'Boiled Eggs + Banana', quantity: '3 eggs + 1 banana', calories: 315, protein: 19, carbs: 27, fat: 15, fiber: 3 },
+    ],
+  };
+
   // Pick random items for each meal
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-  const mealSource = dietType === 'non_veg' ? { ...vegMeals } : vegMeals;
 
-  // Override some meals with non-veg if non_veg
-  if (dietType === 'non_veg') {
+  // Build meal source based on diet type
+  let mealSource;
+  if (dietType === 'vegan') {
+    mealSource = veganMeals;
+  } else if (dietType === 'eggetarian') {
+    mealSource = { ...vegMeals };
+    Object.keys(eggAddons).forEach(key => {
+      mealSource[key] = [...(vegMeals[key] || []), ...eggAddons[key]];
+    });
+  } else if (dietType === 'non_veg') {
+    mealSource = { ...vegMeals };
     Object.keys(nonVegAddons).forEach(key => {
       mealSource[key] = [...(vegMeals[key] || []), ...nonVegAddons[key]];
     });
+  } else {
+    // veg (default)
+    mealSource = vegMeals;
   }
 
   const meals = [
@@ -184,7 +242,7 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
   else calAdjust = `Target: ${targetCalories} cal/day (maintenance)`;
 
   return {
-    title: `${dietType === 'non_veg' ? 'Non-Veg' : 'Vegetarian'} ${goal.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} Diet Plan`,
+    title: `${{ veg: 'Vegetarian', non_veg: 'Non-Veg', vegan: 'Vegan', eggetarian: 'Eggetarian' }[dietType] || 'Vegetarian'} ${goal.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} Diet Plan`,
     goal, dietType,
     totalCalories: totalCaloriesPlan,
     totalProtein: totalProteinPlan,
