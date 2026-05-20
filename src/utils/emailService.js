@@ -1,14 +1,27 @@
 const nodemailer = require('nodemailer');
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+const createTransporter = () => {
+  return nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  });
+};
 
 const sendEmail = async (to, subject, html) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.log(`📧 Email not configured. Would send "${subject}" to ${to}`);
+    return;
+  }
+
+  const transporter = createTransporter();
   const mailOptions = {
     from: `"FitAI" <${process.env.EMAIL_USER}>`,
     to,
@@ -17,13 +30,14 @@ const sendEmail = async (to, subject, html) => {
   };
 
   await transporter.sendMail(mailOptions);
+  console.log(`✅ Email sent to ${to}`);
 };
 
 exports.sendOtpEmail = async (email, otp) => {
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
       <div style="text-align:center;margin-bottom:24px">
-        <span style="font-size:48px">🏋️</span>
+        <span style="font-size:48px">&#127947;</span>
         <h1 style="color:#6C63FF;margin:8px 0 0">FitAI</h1>
       </div>
       <h2 style="text-align:center;color:#fff;margin-bottom:8px">Password Reset OTP</h2>
@@ -44,7 +58,7 @@ exports.sendWelcomeEmail = async (email, name) => {
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
       <div style="text-align:center;margin-bottom:24px">
-        <span style="font-size:48px">🏋️</span>
+        <span style="font-size:48px">&#127947;</span>
         <h1 style="color:#6C63FF;margin:8px 0 0">Welcome to FitAI!</h1>
       </div>
       <p style="color:#ccc;text-align:center;font-size:16px">Hi ${name},</p>
@@ -54,5 +68,5 @@ exports.sendWelcomeEmail = async (email, name) => {
     </div>
   `;
 
-  await sendEmail(email, 'Welcome to FitAI! 🏋️', html);
+  await sendEmail(email, 'Welcome to FitAI!', html);
 };
