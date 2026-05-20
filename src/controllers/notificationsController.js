@@ -4,18 +4,40 @@ const User = require('../models/User');
 const sendExpoPush = async (pushTokens, title, body, data = {}) => {
   const messages = pushTokens
     .filter(t => t && t.startsWith('ExponentPushToken'))
-    .map(token => ({ to: token, sound: 'default', title, body, data }));
+    .map(token => ({
+      to: token,
+      sound: 'default',
+      title,
+      body,
+      data,
+      priority: 'high',
+      channelId: 'default',
+    }));
 
   if (messages.length === 0) return;
 
-  try {
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(messages),
-    });
-  } catch (e) {
-    console.log('Expo push error:', e.message);
+  // Expo allows max ~100 per request, batch them
+  const chunks = [];
+  for (let i = 0; i < messages.length; i += 100) {
+    chunks.push(messages.slice(i, i + 100));
+  }
+
+  for (const chunk of chunks) {
+    try {
+      const res = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate',
+        },
+        body: JSON.stringify(chunk),
+      });
+      const result = await res.json();
+      console.log(`Expo push sent ${chunk.length} notifications:`, JSON.stringify(result.data?.map(d => d.status) || result));
+    } catch (e) {
+      console.log('Expo push error:', e.message);
+    }
   }
 };
 
