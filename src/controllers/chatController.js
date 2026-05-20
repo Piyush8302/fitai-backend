@@ -1,5 +1,73 @@
 const ChatMessage = require('../models/ChatMessage');
 
+// Gemini AI integration
+const callGeminiAI = async (message, user, context) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  const name = user.name?.split(' ')[0] || 'User';
+  const systemPrompt = `You are FitAI, a friendly and knowledgeable AI fitness & health coach inside a fitness app.
+
+User profile:
+- Name: ${name}
+- Age: ${user.age || 'unknown'}, Gender: ${user.gender || 'unknown'}
+- Weight: ${user.weight || 'unknown'}kg, Height: ${user.height || 'unknown'}cm
+- BMI: ${user.bmi || 'unknown'}, BMR: ${user.bmr || 'unknown'} cal
+- Daily calories target: ${user.dailyCalories || 'unknown'} cal
+- Protein need: ${user.proteinNeed || Math.round((user.weight || 70) * 1.6)}g
+- Fitness goal: ${user.fitnessGoal || 'general fitness'}
+- Diet preference: ${user.dietPreference || 'no preference'}
+- Activity level: ${user.activityLevel || 'moderate'}
+
+Rules:
+- Give personalized advice based on the user's profile above
+- Be concise (max 200 words), use bullet points and emojis
+- Focus on Indian context (Indian foods, exercises suitable for Indian lifestyle) when relevant
+- For diet plans, use Indian foods (roti, dal, paneer, rice, etc.) unless user asks for international
+- Always be encouraging and motivational
+- If asked non-health topics, politely redirect to fitness/health
+- Use the user's name naturally in responses
+- Give specific numbers (calories, protein, sets, reps) when possible`;
+
+  const contents = [];
+
+  // Add conversation history
+  context.forEach(c => {
+    contents.push({
+      role: c.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: c.message }],
+    });
+  });
+
+  // Add current message
+  contents.push({ role: 'user', parts: [{ text: message }] });
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 500,
+          },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return reply || null;
+  } catch (err) {
+    console.error('Gemini API error:', err.message);
+    return null;
+  }
+};
+
 // @desc    Send message to AI Health Assistant
 exports.sendMessage = async (req, res, next) => {
   try {
@@ -15,7 +83,11 @@ exports.sendMessage = async (req, res, next) => {
 
     await ChatMessage.create({ user: user.id, role: 'user', message });
 
-    const aiResponse = generateSmartResponse(message, user, context);
+    // Try Gemini AI first, fallback to rule-based
+    let aiResponse = await callGeminiAI(message, user, context);
+    if (!aiResponse) {
+      aiResponse = generateSmartResponse(message, user, context);
+    }
 
     await ChatMessage.create({ user: user.id, role: 'assistant', message: aiResponse });
 
