@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, sendOtp, verifyOtp, googleLogin, googleMobileAuth, googleCallback, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin } = require('../controllers/authController');
+const { register, login, sendOtp, verifyOtp, googleLogin, googleMobileAuth, googleCallback, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin, requestEmailChange, verifyEmailChange, requestPhoneChange, verifyPhoneChange, uploadAvatar } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -158,6 +158,11 @@ router.get('/me', protect, getMe);
  *       200: { description: Profile updated }
  */
 router.put('/profile', protect, updateProfile);
+router.post('/request-email-change', protect, requestEmailChange);
+router.post('/verify-email-change', protect, verifyEmailChange);
+router.post('/request-phone-change', protect, requestPhoneChange);
+router.post('/verify-phone-change', protect, verifyPhoneChange);
+router.put('/avatar', protect, uploadAvatar);
 
 /**
  * @swagger

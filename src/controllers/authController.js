@@ -375,6 +375,152 @@ exports.updateProfile = async (req, res, next) => {
   }
 };
 
+// @desc    Request email change — sends OTP to new email
+exports.requestEmailChange = async (req, res, next) => {
+  try {
+    const { newEmail } = req.body;
+    if (!newEmail) return res.status(400).json({ success: false, message: 'Provide new email' });
+
+    // Check if email already taken by another user
+    const existing = await User.findOne({ email: newEmail.toLowerCase().trim() });
+    if (existing && existing._id.toString() !== req.user.id) {
+      return res.status(400).json({ success: false, message: 'Email already in use by another account' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const user = await User.findById(req.user.id);
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    user.pendingEmail = newEmail.toLowerCase().trim();
+    await user.save();
+
+    try {
+      const { sendLoginOtpEmail } = require('../utils/emailService');
+      await sendLoginOtpEmail(newEmail, otp);
+    } catch (emailErr) {
+      console.error('Email change OTP send failed:', emailErr.message);
+      return res.status(500).json({ success: false, message: 'Failed to send OTP email' });
+    }
+
+    res.json({ success: true, message: 'OTP sent to new email', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify email change OTP and update email
+exports.verifyEmailChange = async (req, res, next) => {
+  try {
+    const { otp } = req.body;
+    if (!otp) return res.status(400).json({ success: false, message: 'Provide OTP' });
+
+    const user = await User.findById(req.user.id).select('+otp +otpExpiry');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.pendingEmail) return res.status(400).json({ success: false, message: 'No pending email change' });
+
+    if (user.otp !== otp || user.otpExpiry < Date.now()) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    }
+
+    // Double-check email not taken (race condition)
+    const existing = await User.findOne({ email: user.pendingEmail });
+    if (existing && existing._id.toString() !== req.user.id) {
+      user.pendingEmail = undefined;
+      user.otp = undefined;
+      user.otpExpiry = undefined;
+      await user.save();
+      return res.status(400).json({ success: false, message: 'Email already in use' });
+    }
+
+    user.email = user.pendingEmail;
+    user.pendingEmail = undefined;
+    user.otp = undefined;
+    user.otpExpiry = undefined;
+    await user.save();
+
+    const token = user.getSignedToken();
+    res.json({ success: true, message: 'Email updated successfully', token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Request phone change — sends OTP to new phone
+exports.requestPhoneChange = async (req, res, next) => {
+  try {
+    const { newPhone } = req.body;
+    if (!newPhone) return res.status(400).json({ success: false, message: 'Provide new phone number' });
+
+    // Check if phone already taken
+    const existing = await User.findOne({ phone: newPhone });
+    if (existing && existing._id.toString() !== req.user.id) {
+      return res.status(400).json({ success: false, message: 'Phone number already in use by another account' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const user = await User.findById(req.user.id);
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    user.pendingPhone = newPhone;
+    await user.save();
+
+    await sendOtpSms(newPhone, otp);
+
+    res.json({ success: true, message: 'OTP sent to new phone', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify phone change OTP and update phone
+exports.verifyPhoneChange = async (req, res, next) => {
+  try {
+    const { otp } = req.body;
+    if (!otp) return res.status(400).json({ success: false, message: 'Provide OTP' });
+
+    const user = await User.findById(req.user.id).select('+otp +otpExpiry');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.pendingPhone) return res.status(400).json({ success: false, message: 'No pending phone change' });
+
+    if (user.otp !== otp || user.otpExpiry < Date.now()) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    }
+
+    // Double-check phone not taken
+    const existing = await User.findOne({ phone: user.pendingPhone });
+    if (existing && existing._id.toString() !== req.user.id) {
+      user.pendingPhone = undefined;
+      user.otp = undefined;
+      user.otpExpiry = undefined;
+      await user.save();
+      return res.status(400).json({ success: false, message: 'Phone already in use' });
+    }
+
+    user.phone = user.pendingPhone;
+    user.pendingPhone = undefined;
+    user.otp = undefined;
+    user.otpExpiry = undefined;
+    await user.save();
+
+    res.json({ success: true, message: 'Phone updated successfully', user: { id: user._id, name: user.name, email: user.email, phone: user.phone } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Upload avatar (base64)
+exports.uploadAvatar = async (req, res, next) => {
+  try {
+    const { avatar } = req.body;
+    if (!avatar) return res.status(400).json({ success: false, message: 'Provide avatar data' });
+
+    const user = await User.findByIdAndUpdate(req.user.id, { avatar }, { new: true });
+    res.json({ success: true, message: 'Avatar updated', user: { id: user._id, name: user.name, avatar: user.avatar } });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Seed admin user
 exports.seedAdmin = async (req, res, next) => {
   try {

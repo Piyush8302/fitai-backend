@@ -45,6 +45,8 @@ const userSchema = new mongoose.Schema({
   expoPushToken: { type: String },
   otp: { type: String, select: false },
   otpExpiry: { type: Date, select: false },
+  pendingEmail: { type: String },
+  pendingPhone: { type: String },
 
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
 }, { timestamps: true });
