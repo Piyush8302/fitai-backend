@@ -68,13 +68,19 @@ exports.createOrder = async (req, res, next) => {
 
     let orderId;
     if (razorpay) {
-      const order = await razorpay.orders.create({
-        amount,
-        currency: 'INR',
-        receipt: `fitai_${req.user.id}_${Date.now()}`,
-        notes: { userId: req.user.id, plan },
-      });
-      orderId = order.id;
+      try {
+        const order = await razorpay.orders.create({
+          amount,
+          currency: 'INR',
+          receipt: `fitai_${req.user.id}_${Date.now()}`,
+          notes: { userId: req.user.id, plan },
+        });
+        orderId = order.id;
+      } catch (rzpErr) {
+        console.error('Razorpay order error:', JSON.stringify(rzpErr));
+        const desc = rzpErr?.error?.description || rzpErr?.message || 'Payment service error';
+        return res.status(502).json({ success: false, message: desc });
+      }
     } else {
       orderId = 'order_test_' + Date.now();
       console.log('Razorpay keys not configured. Using test order:', orderId);
