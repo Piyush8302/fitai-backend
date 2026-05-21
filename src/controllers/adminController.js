@@ -58,7 +58,7 @@ exports.getUsers = async (req, res, next) => {
 // @desc    Get user details
 exports.getUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
+    const user = await User.findById(req.params.id).select('-password -avatar');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const ChatMessage = require('../models/ChatMessage');
