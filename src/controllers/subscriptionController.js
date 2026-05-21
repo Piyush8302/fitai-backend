@@ -172,112 +172,72 @@ exports.checkoutPage = async (req, res, next) => {
     const protocol = req.get('x-forwarded-proto') || req.protocol;
     const verifyUrl = `${protocol}://${req.get('host')}/api/subscription/checkout-verify`;
 
-    const html = `<!DOCTYPE html>
-<html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FitAI Premium</title>
-<style>
-  body{font-family:system-ui;background:#0D0D1A;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}
-  .card{background:#1A1A2E;border-radius:16px;padding:30px;max-width:400px;width:100%;text-align:center;border:1px solid #6C63FF30}
-  h1{color:#6C63FF;font-size:24px;margin-bottom:4px}
-  .price{font-size:36px;font-weight:bold;color:#fff;margin:16px 0 4px}
-  .price span{font-size:16px;color:#888}
-  .plan{color:#888;font-size:14px}
-  .features{text-align:left;margin:20px 0;font-size:14px;color:#ccc;line-height:2}
-  .features li::marker{color:#6C63FF}
-  button{background:linear-gradient(135deg,#6C63FF,#4834DF);color:#fff;border:none;padding:16px 40px;border-radius:12px;font-size:18px;font-weight:bold;cursor:pointer;width:100%;margin-top:10px}
-  button:active{opacity:0.8}
-  .secure{color:#666;font-size:12px;margin-top:16px}
-  .loading{display:none;color:#6C63FF;margin-top:12px}
-  .error{color:#FF6B6B;margin-top:12px;font-size:13px;display:none}
-</style>
-</head><body>
-<div class="card">
-  <h1>FitAI Premium</h1>
-  <div class="price">${amount / 100} <span>/${subscription.plan === 'yearly' ? 'year' : 'month'}</span></div>
-  <div class="plan">${subscription.plan === 'yearly' ? 'Yearly Plan' : 'Monthly Plan'}</div>
-  <ul class="features">
-    <li>Unlimited AI Chat</li>
-    <li>Personalized Diet Plans</li>
-    <li>Advanced Analytics</li>
-    <li>Ad-Free Experience</li>
-    <li>Priority Support</li>
-  </ul>
-  <button id="payBtn" onclick="startPayment()">Pay ${amount / 100}</button>
-  <div class="loading" id="loadingMsg">Processing payment...</div>
-  <div class="error" id="errorMsg"></div>
-  <div class="secure">Secured by Razorpay</div>
-</div>
-<script src="https://checkout.razorpay.com/v1/checkout.js"><\/script>
-<script>
-function startPayment(){
-  try{
-    if(typeof Razorpay==='undefined'){
-      document.getElementById('errorMsg').textContent='Payment SDK loading... Please wait and try again.';
-      document.getElementById('errorMsg').style.display='block';
-      return;
-    }
-    document.getElementById('payBtn').disabled=true;
-    document.getElementById('loadingMsg').style.display='block';
-    document.getElementById('errorMsg').style.display='none';
-    var options={
-      key:'${key}',
-      amount:${amount},
-      currency:'INR',
-      name:'FitAI Premium',
-      description:'${subscription.plan === 'yearly' ? 'Yearly' : 'Monthly'} Subscription',
-      order_id:'${subscription.orderId}',
-      prefill:{name:'${(user.name || '').replace(/'/g, "\\'")}',email:'${user.email || ''}',contact:'${user.phone || ''}'},
-      theme:{color:'#6C63FF'},
-      handler:function(response){
-        document.getElementById('loadingMsg').textContent='Activating premium...';
-        fetch('${verifyUrl}',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            orderId:response.razorpay_order_id,
-            paymentId:response.razorpay_payment_id,
-            signature:response.razorpay_signature,
-            subscriptionId:'${subscriptionId}'
-          })
-        }).then(function(r){return r.json()}).then(function(data){
-          if(data.success){
-            document.getElementById('loadingMsg').textContent='Premium activated! You can close this page.';
-            document.getElementById('payBtn').textContent='Done!';
-            document.getElementById('payBtn').style.background='#4CAF50';
-          }else{
-            alert('Verification failed: '+(data.message||'Unknown error'));
-            document.getElementById('payBtn').disabled=false;
-            document.getElementById('loadingMsg').style.display='none';
-          }
-        }).catch(function(){
-          alert('Network error. Please try again.');
-          document.getElementById('payBtn').disabled=false;
-          document.getElementById('loadingMsg').style.display='none';
-        });
-      },
-      modal:{ondismiss:function(){
-        document.getElementById('payBtn').disabled=false;
-        document.getElementById('loadingMsg').style.display='none';
-      }}
-    };
-    var rzp=new Razorpay(options);
-    rzp.on('payment.failed',function(resp){
-      document.getElementById('errorMsg').textContent='Payment failed: '+(resp.error.description||'Unknown error');
-      document.getElementById('errorMsg').style.display='block';
-      document.getElementById('payBtn').disabled=false;
-      document.getElementById('loadingMsg').style.display='none';
-    });
-    rzp.open();
-  }catch(e){
-    document.getElementById('errorMsg').textContent='Error: '+e.message;
-    document.getElementById('errorMsg').style.display='block';
-    document.getElementById('payBtn').disabled=false;
-    document.getElementById('loadingMsg').style.display='none';
-  }
-}
-</script>
-</body></html>`;
+    const safeName = (user.name || '').replace(/['"\\]/g, '');
+    const safeEmail = (user.email || '').replace(/['"\\]/g, '');
+    const safePhone = (user.phone || '').replace(/['"\\]/g, '');
+    const planLabel = subscription.plan === 'yearly' ? 'Yearly' : 'Monthly';
+    const priceDisplay = amount / 100;
+
+    const html = '<!DOCTYPE html>' +
+    '<html><head>' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>FitAI Premium</title>' +
+    '<style>' +
+    'body{font-family:system-ui;background:#0D0D1A;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}' +
+    '.card{background:#1A1A2E;border-radius:16px;padding:30px;max-width:400px;width:100%;text-align:center;border:1px solid #6C63FF30}' +
+    'h1{color:#6C63FF;font-size:24px;margin-bottom:4px}' +
+    '.status{color:#6C63FF;font-size:16px;margin:20px 0}' +
+    '.error{color:#FF6B6B;font-size:14px;margin:16px 0}' +
+    'button{background:linear-gradient(135deg,#6C63FF,#4834DF);color:#fff;border:none;padding:16px 40px;border-radius:12px;font-size:18px;font-weight:bold;cursor:pointer;width:100%;margin-top:10px}' +
+    '.success{background:#4CAF50;color:#fff;font-size:18px;font-weight:bold;padding:20px;border-radius:12px;margin:20px 0}' +
+    '.secure{color:#666;font-size:12px;margin-top:16px}' +
+    '</style>' +
+    '<script src="https://checkout.razorpay.com/v1/checkout.js"></script>' +
+    '</head><body>' +
+    '<div class="card">' +
+    '<h1>FitAI Premium</h1>' +
+    '<div class="status" id="status">Opening payment form...</div>' +
+    '<div id="errorBox"></div>' +
+    '<button id="payBtn" onclick="startPayment()" style="display:none">Retry Payment</button>' +
+    '<div class="secure">Secured by Razorpay</div>' +
+    '</div>' +
+    '<script>' +
+    'var payConfig={' +
+    'key:"' + key + '",' +
+    'amount:' + amount + ',' +
+    'currency:"INR",' +
+    'name:"FitAI Premium",' +
+    'description:"' + planLabel + ' Subscription",' +
+    'order_id:"' + subscription.orderId + '",' +
+    'prefill:{name:"' + safeName + '",email:"' + safeEmail + '",contact:"' + safePhone + '"},' +
+    'theme:{color:"#6C63FF"},' +
+    'handler:function(r){' +
+    'document.getElementById("status").textContent="Activating premium...";' +
+    'fetch("' + verifyUrl + '",{' +
+    'method:"POST",' +
+    'headers:{"Content-Type":"application/json"},' +
+    'body:JSON.stringify({orderId:r.razorpay_order_id,paymentId:r.razorpay_payment_id,signature:r.razorpay_signature,subscriptionId:"' + subscriptionId + '"})' +
+    '}).then(function(x){return x.json()}).then(function(d){' +
+    'if(d.success){document.getElementById("status").innerHTML="<div class=success>Premium Activated! Close this page.</div>";}' +
+    'else{document.getElementById("status").textContent="Failed: "+(d.message||"Error");document.getElementById("payBtn").style.display="block";}' +
+    '}).catch(function(){document.getElementById("status").textContent="Network error";document.getElementById("payBtn").style.display="block";});' +
+    '},' +
+    'modal:{ondismiss:function(){document.getElementById("status").textContent="Payment cancelled";document.getElementById("payBtn").style.display="block";}}' +
+    '};' +
+    'function startPayment(){' +
+    'document.getElementById("status").textContent="Opening payment...";' +
+    'document.getElementById("payBtn").style.display="none";' +
+    'document.getElementById("errorBox").innerHTML="";' +
+    'try{' +
+    'if(typeof Razorpay==="undefined"){document.getElementById("errorBox").innerHTML="<div class=error>Payment SDK not loaded. Check internet.</div>";document.getElementById("payBtn").style.display="block";return;}' +
+    'var rzp=new Razorpay(payConfig);' +
+    'rzp.on("payment.failed",function(resp){document.getElementById("errorBox").innerHTML="<div class=error>"+resp.error.description+"</div>";document.getElementById("payBtn").style.display="block";});' +
+    'rzp.open();' +
+    '}catch(e){document.getElementById("errorBox").innerHTML="<div class=error>"+e.message+"</div>";document.getElementById("payBtn").style.display="block";}' +
+    '}' +
+    'window.onload=function(){setTimeout(startPayment,500);};' +
+    '</script>' +
+    '</body></html>';
 
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
