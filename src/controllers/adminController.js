@@ -111,17 +111,29 @@ exports.deactivateUser = async (req, res, next) => {
 // @desc    Get all subscriptions
 exports.getSubscriptions = async (req, res, next) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, page = 1, limit = 50 } = req.query;
     const filter = {};
     if (status) filter.status = status;
 
-    const total = await Subscription.countDocuments(filter);
-    const subs = await Subscription.find(filter)
-      .populate('user', 'name email')
-      .skip((page - 1) * limit).limit(parseInt(limit))
-      .sort({ createdAt: -1 });
+    const [total, subs, statusCounts] = await Promise.all([
+      Subscription.countDocuments(filter),
+      Subscription.find(filter)
+        .populate('user', 'name email phone')
+        .skip((page - 1) * limit).limit(parseInt(limit))
+        .sort({ createdAt: -1 }),
+      Subscription.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$amount' } } },
+      ]),
+    ]);
 
-    res.json({ success: true, count: subs.length, total, page: parseInt(page), data: subs });
+    const stats = { all: 0, pending: 0, active: 0, cancelled: 0, expired: 0, totalRevenue: 0 };
+    statusCounts.forEach(s => {
+      stats[s._id] = s.count;
+      stats.all += s.count;
+      if (s._id === 'active') stats.totalRevenue = s.revenue;
+    });
+
+    res.json({ success: true, count: subs.length, total, page: parseInt(page), stats, data: subs });
   } catch (error) {
     next(error);
   }
