@@ -5,6 +5,7 @@ const {
   createOrder,
   verifyPayment,
   checkoutPage,
+  checkoutCallback,
   checkoutVerify,
   getMySubscription,
   cancelSubscription,
@@ -67,6 +68,15 @@ router.post('/verify-payment', protect, verifyPayment);
  *     summary: Checkout page (HTML with Razorpay embedded) for Expo WebBrowser
  */
 router.get('/checkout/:subscriptionId', checkoutPage);
+
+/**
+ * @swagger
+ * /subscription/checkout-callback/{subscriptionId}:
+ *   post:
+ *     tags: [Subscription]
+ *     summary: Razorpay redirect callback after payment
+ */
+router.post('/checkout-callback/:subscriptionId', checkoutCallback);
 
 /**
  * @swagger

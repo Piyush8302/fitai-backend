@@ -158,86 +158,104 @@ exports.verifyPayment = async (req, res, next) => {
   }
 };
 
-// @desc    Checkout page (HTML with Razorpay embedded) - for Expo WebBrowser
+// @desc    Checkout page (HTML form that redirects to Razorpay) - for Expo WebBrowser
 exports.checkoutPage = async (req, res, next) => {
   try {
     const { subscriptionId } = req.params;
     const subscription = await Subscription.findById(subscriptionId).populate('user', 'name email phone');
     if (!subscription) return res.status(404).send('Order not found');
-    if (subscription.status === 'active') return res.send('<h2>Already activated!</h2><script>window.location="fitai://premium-success";</script>');
+
+    const protocol = req.get('x-forwarded-proto') || req.protocol;
+    const baseUrl = `${protocol}://${req.get('host')}`;
+
+    if (subscription.status === 'active') {
+      return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#4CAF50">Premium Already Active!</h2><p style="color:#888">You can close this page.</p></div></body></html>`);
+    }
 
     const key = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
-    const amount = subscription.amount;
-    const user = subscription.user;
-    const protocol = req.get('x-forwarded-proto') || req.protocol;
-    const verifyUrl = `${protocol}://${req.get('host')}/api/subscription/checkout-verify`;
-
-    const safeName = (user.name || '').replace(/['"\\]/g, '');
-    const safeEmail = (user.email || '').replace(/['"\\]/g, '');
-    const safePhone = (user.phone || '').replace(/['"\\]/g, '');
+    const callbackUrl = `${baseUrl}/api/subscription/checkout-callback/${subscriptionId}`;
+    const safeName = (subscription.user.name || '').replace(/['"\\&<>]/g, '');
+    const safeEmail = (subscription.user.email || '').replace(/['"\\&<>]/g, '');
+    const safePhone = (subscription.user.phone || '').replace(/['"\\&<>]/g, '');
     const planLabel = subscription.plan === 'yearly' ? 'Yearly' : 'Monthly';
-    const priceDisplay = amount / 100;
+    const priceDisplay = subscription.amount / 100;
 
-    const html = '<!DOCTYPE html>' +
-    '<html><head>' +
-    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>FitAI Premium</title>' +
-    '<style>' +
-    'body{font-family:system-ui;background:#0D0D1A;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}' +
-    '.card{background:#1A1A2E;border-radius:16px;padding:30px;max-width:400px;width:100%;text-align:center;border:1px solid #6C63FF30}' +
-    'h1{color:#6C63FF;font-size:24px;margin-bottom:4px}' +
-    '.status{color:#6C63FF;font-size:16px;margin:20px 0}' +
-    '.error{color:#FF6B6B;font-size:14px;margin:16px 0}' +
-    'button{background:linear-gradient(135deg,#6C63FF,#4834DF);color:#fff;border:none;padding:16px 40px;border-radius:12px;font-size:18px;font-weight:bold;cursor:pointer;width:100%;margin-top:10px}' +
-    '.success{background:#4CAF50;color:#fff;font-size:18px;font-weight:bold;padding:20px;border-radius:12px;margin:20px 0}' +
-    '.secure{color:#666;font-size:12px;margin-top:16px}' +
-    '</style>' +
-    '<script src="https://checkout.razorpay.com/v1/checkout.js"></script>' +
-    '</head><body>' +
-    '<div class="card">' +
-    '<h1>FitAI Premium</h1>' +
-    '<div class="status" id="status">Opening payment form...</div>' +
-    '<div id="errorBox"></div>' +
-    '<button id="payBtn" onclick="startPayment()" style="display:none">Retry Payment</button>' +
-    '<div class="secure">Secured by Razorpay</div>' +
-    '</div>' +
-    '<script>' +
-    'var payConfig={' +
-    'key:"' + key + '",' +
-    'amount:' + amount + ',' +
-    'currency:"INR",' +
-    'name:"FitAI Premium",' +
-    'description:"' + planLabel + ' Subscription",' +
-    'order_id:"' + subscription.orderId + '",' +
-    'prefill:{name:"' + safeName + '",email:"' + safeEmail + '",contact:"' + safePhone + '"},' +
-    'theme:{color:"#6C63FF"},' +
-    'handler:function(r){' +
-    'document.getElementById("status").textContent="Activating premium...";' +
-    'fetch("' + verifyUrl + '",{' +
-    'method:"POST",' +
-    'headers:{"Content-Type":"application/json"},' +
-    'body:JSON.stringify({orderId:r.razorpay_order_id,paymentId:r.razorpay_payment_id,signature:r.razorpay_signature,subscriptionId:"' + subscriptionId + '"})' +
-    '}).then(function(x){return x.json()}).then(function(d){' +
-    'if(d.success){document.getElementById("status").innerHTML="<div class=success>Premium Activated! Close this page.</div>";}' +
-    'else{document.getElementById("status").textContent="Failed: "+(d.message||"Error");document.getElementById("payBtn").style.display="block";}' +
-    '}).catch(function(){document.getElementById("status").textContent="Network error";document.getElementById("payBtn").style.display="block";});' +
-    '},' +
-    'modal:{ondismiss:function(){document.getElementById("status").textContent="Payment cancelled";document.getElementById("payBtn").style.display="block";}}' +
-    '};' +
-    'function startPayment(){' +
-    'document.getElementById("status").textContent="Opening payment...";' +
-    'document.getElementById("payBtn").style.display="none";' +
-    'document.getElementById("errorBox").innerHTML="";' +
-    'try{' +
-    'if(typeof Razorpay==="undefined"){document.getElementById("errorBox").innerHTML="<div class=error>Payment SDK not loaded. Check internet.</div>";document.getElementById("payBtn").style.display="block";return;}' +
-    'var rzp=new Razorpay(payConfig);' +
-    'rzp.on("payment.failed",function(resp){document.getElementById("errorBox").innerHTML="<div class=error>"+resp.error.description+"</div>";document.getElementById("payBtn").style.display="block";});' +
-    'rzp.open();' +
-    '}catch(e){document.getElementById("errorBox").innerHTML="<div class=error>"+e.message+"</div>";document.getElementById("payBtn").style.display="block";}' +
-    '}' +
-    'window.onload=function(){setTimeout(startPayment,500);};' +
-    '</script>' +
-    '</body></html>';
+    // Use Razorpay's standard checkout with callback_url for redirect mode
+    const html = `<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FitAI Premium - Pay</title>
+<style>
+body{font-family:system-ui;background:#0D0D1A;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}
+.card{background:#1A1A2E;border-radius:16px;padding:30px;max-width:400px;width:100%;text-align:center;border:1px solid #6C63FF30}
+h1{color:#6C63FF;font-size:22px;margin:0 0 4px}
+.price{font-size:32px;font-weight:bold;margin:16px 0 4px}
+.plan{color:#888;font-size:14px;margin-bottom:20px}
+.features{text-align:left;margin:0 0 20px;font-size:14px;color:#ccc;line-height:2.2;padding-left:20px}
+.features li::marker{color:#6C63FF}
+.pay-btn{background:linear-gradient(135deg,#6C63FF,#4834DF);color:#fff;border:none;padding:16px;border-radius:12px;font-size:18px;font-weight:bold;cursor:pointer;width:100%;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px}
+.pay-btn:disabled{opacity:0.6}
+.secure{color:#666;font-size:12px;margin-top:16px}
+.msg{color:#6C63FF;font-size:14px;margin-top:12px;display:none}
+.err{color:#FF6B6B;font-size:13px;margin-top:12px;display:none}
+</style>
+</head><body>
+<div class="card">
+<h1>FitAI Premium</h1>
+<div class="price">${priceDisplay} <span style="font-size:16px;color:#888">/${subscription.plan === 'yearly' ? 'year' : 'month'}</span></div>
+<div class="plan">${planLabel} Plan</div>
+<ul class="features">
+<li>Unlimited AI Chat</li>
+<li>Personalized Diet Plans</li>
+<li>Advanced Analytics</li>
+<li>Ad-Free Experience</li>
+<li>Priority Support</li>
+</ul>
+<button class="pay-btn" id="payBtn" onclick="pay()">Pay ${priceDisplay}</button>
+<div class="msg" id="msg">Redirecting to payment...</div>
+<div class="err" id="err"></div>
+<div class="secure">Secured by Razorpay</div>
+</div>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+function pay(){
+var btn=document.getElementById('payBtn');
+var msg=document.getElementById('msg');
+var err=document.getElementById('err');
+btn.disabled=true;
+msg.style.display='block';
+err.style.display='none';
+try{
+if(typeof Razorpay==='undefined'){
+err.textContent='Payment SDK loading, please wait...';
+err.style.display='block';
+msg.style.display='none';
+btn.disabled=false;
+setTimeout(pay,2000);
+return;
+}
+var rzp=new Razorpay({
+key:'${key}',
+amount:${subscription.amount},
+currency:'INR',
+name:'FitAI Premium',
+description:'${planLabel} Subscription',
+order_id:'${subscription.orderId}',
+callback_url:'${callbackUrl}',
+prefill:{name:'${safeName}',email:'${safeEmail}',contact:'${safePhone}'},
+theme:{color:'#6C63FF'},
+notes:{subscriptionId:'${subscriptionId}'}
+});
+rzp.open();
+}catch(e){
+err.textContent='Error: '+e.message;
+err.style.display='block';
+msg.style.display='none';
+btn.disabled=false;
+}
+}
+</script>
+</body></html>`;
 
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
@@ -246,10 +264,18 @@ exports.checkoutPage = async (req, res, next) => {
   }
 };
 
-// @desc    Checkout verify (called from checkout HTML page)
-exports.checkoutVerify = async (req, res, next) => {
+// @desc    Checkout callback (Razorpay redirects here after payment)
+exports.checkoutCallback = async (req, res, next) => {
   try {
-    const { orderId, paymentId, signature, subscriptionId } = req.body;
+    const { subscriptionId } = req.params;
+    // Razorpay sends payment data as POST body
+    const paymentId = req.body.razorpay_payment_id;
+    const orderId = req.body.razorpay_order_id;
+    const signature = req.body.razorpay_signature;
+
+    if (!paymentId || !orderId) {
+      return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Payment Failed</h2><p style="color:#888">No payment received. Please try again.</p></div></body></html>`);
+    }
 
     // Verify signature
     if (process.env.RAZORPAY_KEY_SECRET && signature) {
@@ -258,34 +284,49 @@ exports.checkoutVerify = async (req, res, next) => {
         .update(orderId + '|' + paymentId)
         .digest('hex');
       if (expectedSig !== signature) {
-        return res.status(400).json({ success: false, message: 'Invalid signature' });
+        return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Verification Failed</h2><p style="color:#888">Payment signature mismatch. Contact support.</p></div></body></html>`);
       }
     }
 
     const subscription = await Subscription.findById(subscriptionId);
-    if (!subscription) return res.status(404).json({ success: false, message: 'Subscription not found' });
-    if (subscription.status === 'active') return res.json({ success: true, message: 'Already active' });
+    if (!subscription) {
+      return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Order Not Found</h2></div></body></html>`);
+    }
 
-    const startDate = new Date();
-    const endDate = new Date();
-    if (subscription.plan === 'yearly') endDate.setFullYear(endDate.getFullYear() + 1);
-    else endDate.setMonth(endDate.getMonth() + 1);
+    if (subscription.status !== 'active') {
+      const startDate = new Date();
+      const endDate = new Date();
+      if (subscription.plan === 'yearly') endDate.setFullYear(endDate.getFullYear() + 1);
+      else endDate.setMonth(endDate.getMonth() + 1);
 
-    subscription.status = 'active';
-    subscription.paymentId = paymentId;
-    subscription.startDate = startDate;
-    subscription.endDate = endDate;
-    await subscription.save();
+      subscription.status = 'active';
+      subscription.paymentId = paymentId;
+      subscription.startDate = startDate;
+      subscription.endDate = endDate;
+      await subscription.save();
 
-    await User.findByIdAndUpdate(subscription.user, {
-      isPremium: true,
-      subscriptionPlan: subscription.plan,
-      subscriptionExpiry: endDate,
-    });
+      await User.findByIdAndUpdate(subscription.user, {
+        isPremium: true,
+        subscriptionPlan: subscription.plan,
+        subscriptionExpiry: endDate,
+      });
+    }
 
-    res.json({ success: true, message: 'Premium activated!' });
+    // Show success page
+    res.send(`<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px">
+<div style="text-align:center;background:#1A1A2E;border-radius:16px;padding:30px;max-width:400px;width:100%;border:1px solid #4CAF5040">
+<div style="font-size:48px;margin-bottom:16px">🎉</div>
+<h2 style="color:#4CAF50;margin:0 0 8px">Premium Activated!</h2>
+<p style="color:#ccc;font-size:14px;line-height:1.6;margin:0 0 20px">Enjoy unlimited AI chat and all premium features. You can close this page and go back to the app.</p>
+<div style="background:#4CAF5020;border-radius:12px;padding:16px;border:1px solid #4CAF5030">
+<p style="color:#4CAF50;font-weight:bold;margin:0;font-size:16px">${subscription.plan === 'yearly' ? 'Yearly' : 'Monthly'} Plan Active</p>
+</div>
+</div>
+</body></html>`);
   } catch (error) {
-    next(error);
+    console.error('Checkout callback error:', error);
+    res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Something went wrong</h2><p style="color:#888">Please contact support.</p></div></body></html>`);
   }
 };
 
