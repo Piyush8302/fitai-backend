@@ -34,22 +34,27 @@ exports.getToday = async (req, res, next) => {
     const today = getTodayIST();
 
     let tracking = await Tracking.findOne({ user: req.user.id, date: today });
+
+    // Always compute goal-adjusted calorie target
+    const bmr = req.user.bmr || 1500;
+    const tdee = req.user.dailyCalories || 2000;
+    const goalCalMap = {
+      weight_loss: bmr,
+      fat_loss: bmr,
+      weight_gain: Math.round(tdee * 1.2),
+      muscle_building: Math.round(tdee * 1.15),
+      height_growth: Math.round(tdee * 1.1),
+      gym_workout: Math.round(tdee * 1.1),
+      home_workout: tdee,
+      maintenance: tdee,
+    };
+    const caloriesGoal = goalCalMap[req.user.fitnessGoal] || tdee;
+
     if (!tracking) {
-      // Goal-adjusted calorie target
-      const bmr = req.user.bmr || 1500;
-      const tdee = req.user.dailyCalories || 2000;
-      const goalCalMap = {
-        weight_loss: bmr,                    // Eat at BMR = safe deficit
-        fat_loss: bmr,                       // Eat at BMR = deficit
-        weight_gain: Math.round(tdee * 1.2), // 20% surplus
-        muscle_building: Math.round(tdee * 1.15), // 15% surplus
-        height_growth: Math.round(tdee * 1.1),    // 10% surplus
-        gym_workout: Math.round(tdee * 1.1),      // slight surplus
-        home_workout: tdee,                  // maintenance
-        maintenance: tdee,                   // maintenance
-      };
-      const caloriesGoal = goalCalMap[req.user.fitnessGoal] || tdee;
       tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8, mealsLogged: [], workoutMinutes: 0 };
+    } else {
+      tracking = tracking.toObject();
+      tracking.caloriesGoal = caloriesGoal; // Always override with goal-adjusted value
     }
 
     res.json({ success: true, data: tracking });
