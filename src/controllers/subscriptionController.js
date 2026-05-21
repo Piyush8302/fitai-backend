@@ -169,7 +169,8 @@ exports.checkoutPage = async (req, res, next) => {
     const key = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
     const amount = subscription.amount;
     const user = subscription.user;
-    const verifyUrl = `${req.protocol}://${req.get('host')}/api/subscription/checkout-verify`;
+    const protocol = req.get('x-forwarded-proto') || req.protocol;
+    const verifyUrl = `${protocol}://${req.get('host')}/api/subscription/checkout-verify`;
 
     const html = `<!DOCTYPE html>
 <html><head>
@@ -188,11 +189,12 @@ exports.checkoutPage = async (req, res, next) => {
   button:active{opacity:0.8}
   .secure{color:#666;font-size:12px;margin-top:16px}
   .loading{display:none;color:#6C63FF;margin-top:12px}
+  .error{color:#FF6B6B;margin-top:12px;font-size:13px;display:none}
 </style>
 </head><body>
 <div class="card">
   <h1>FitAI Premium</h1>
-  <div class="price">₹${amount / 100} <span>/${subscription.plan === 'yearly' ? 'year' : 'month'}</span></div>
+  <div class="price">${amount / 100} <span>/${subscription.plan === 'yearly' ? 'year' : 'month'}</span></div>
   <div class="plan">${subscription.plan === 'yearly' ? 'Yearly Plan' : 'Monthly Plan'}</div>
   <ul class="features">
     <li>Unlimited AI Chat</li>
@@ -201,57 +203,78 @@ exports.checkoutPage = async (req, res, next) => {
     <li>Ad-Free Experience</li>
     <li>Priority Support</li>
   </ul>
-  <button id="payBtn" onclick="startPayment()">Pay ₹${amount / 100}</button>
+  <button id="payBtn" onclick="startPayment()">Pay ${amount / 100}</button>
   <div class="loading" id="loadingMsg">Processing payment...</div>
-  <div class="secure">🔒 Secured by Razorpay</div>
+  <div class="error" id="errorMsg"></div>
+  <div class="secure">Secured by Razorpay</div>
 </div>
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script src="https://checkout.razorpay.com/v1/checkout.js"><\/script>
 <script>
 function startPayment(){
-  document.getElementById('payBtn').disabled=true;
-  document.getElementById('loadingMsg').style.display='block';
-  var options={
-    key:'${key}',
-    amount:${amount},
-    currency:'INR',
-    name:'FitAI Premium',
-    description:'${subscription.plan === 'yearly' ? 'Yearly' : 'Monthly'} Subscription',
-    order_id:'${subscription.orderId}',
-    prefill:{name:'${user.name || ''}',email:'${user.email || ''}',contact:'${user.phone || ''}'},
-    theme:{color:'#6C63FF'},
-    handler:function(response){
-      document.getElementById('loadingMsg').textContent='Activating premium...';
-      fetch('${verifyUrl}',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          orderId:response.razorpay_order_id,
-          paymentId:response.razorpay_payment_id,
-          signature:response.razorpay_signature,
-          subscriptionId:'${subscriptionId}'
-        })
-      }).then(r=>r.json()).then(data=>{
-        if(data.success){
-          document.getElementById('loadingMsg').textContent='Premium activated! Redirecting...';
-          setTimeout(()=>{window.location='fitai://premium-success';},1000);
-        }else{
-          alert('Verification failed: '+(data.message||'Unknown error'));
+  try{
+    if(typeof Razorpay==='undefined'){
+      document.getElementById('errorMsg').textContent='Payment SDK loading... Please wait and try again.';
+      document.getElementById('errorMsg').style.display='block';
+      return;
+    }
+    document.getElementById('payBtn').disabled=true;
+    document.getElementById('loadingMsg').style.display='block';
+    document.getElementById('errorMsg').style.display='none';
+    var options={
+      key:'${key}',
+      amount:${amount},
+      currency:'INR',
+      name:'FitAI Premium',
+      description:'${subscription.plan === 'yearly' ? 'Yearly' : 'Monthly'} Subscription',
+      order_id:'${subscription.orderId}',
+      prefill:{name:'${(user.name || '').replace(/'/g, "\\'")}',email:'${user.email || ''}',contact:'${user.phone || ''}'},
+      theme:{color:'#6C63FF'},
+      handler:function(response){
+        document.getElementById('loadingMsg').textContent='Activating premium...';
+        fetch('${verifyUrl}',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            orderId:response.razorpay_order_id,
+            paymentId:response.razorpay_payment_id,
+            signature:response.razorpay_signature,
+            subscriptionId:'${subscriptionId}'
+          })
+        }).then(function(r){return r.json()}).then(function(data){
+          if(data.success){
+            document.getElementById('loadingMsg').textContent='Premium activated! You can close this page.';
+            document.getElementById('payBtn').textContent='Done!';
+            document.getElementById('payBtn').style.background='#4CAF50';
+          }else{
+            alert('Verification failed: '+(data.message||'Unknown error'));
+            document.getElementById('payBtn').disabled=false;
+            document.getElementById('loadingMsg').style.display='none';
+          }
+        }).catch(function(){
+          alert('Network error. Please try again.');
           document.getElementById('payBtn').disabled=false;
           document.getElementById('loadingMsg').style.display='none';
-        }
-      }).catch(()=>{
-        alert('Network error. Please try again.');
+        });
+      },
+      modal:{ondismiss:function(){
         document.getElementById('payBtn').disabled=false;
         document.getElementById('loadingMsg').style.display='none';
-      });
-    },
-    modal:{ondismiss:function(){
+      }}
+    };
+    var rzp=new Razorpay(options);
+    rzp.on('payment.failed',function(resp){
+      document.getElementById('errorMsg').textContent='Payment failed: '+(resp.error.description||'Unknown error');
+      document.getElementById('errorMsg').style.display='block';
       document.getElementById('payBtn').disabled=false;
       document.getElementById('loadingMsg').style.display='none';
-    }}
-  };
-  var rzp=new Razorpay(options);
-  rzp.open();
+    });
+    rzp.open();
+  }catch(e){
+    document.getElementById('errorMsg').textContent='Error: '+e.message;
+    document.getElementById('errorMsg').style.display='block';
+    document.getElementById('payBtn').disabled=false;
+    document.getElementById('loadingMsg').style.display='none';
+  }
 }
 </script>
 </body></html>`;
