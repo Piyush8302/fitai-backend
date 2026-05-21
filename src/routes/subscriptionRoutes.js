@@ -1,6 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const { getPlans, createOrder, verifyPayment, getMySubscription, cancelSubscription } = require('../controllers/subscriptionController');
+const {
+  getPlans,
+  createOrder,
+  verifyPayment,
+  checkoutPage,
+  checkoutVerify,
+  getMySubscription,
+  cancelSubscription,
+} = require('../controllers/subscriptionController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -15,7 +23,7 @@ const { protect } = require('../middleware/auth');
  * /subscription/plans:
  *   get:
  *     tags: [Subscription]
- *     summary: Get available subscription plans (₹29/month, ₹249/year)
+ *     summary: Get available subscription plans
  *     responses:
  *       200: { description: List of plans with features }
  */
@@ -48,20 +56,26 @@ router.post('/create-order', protect, createOrder);
  *     tags: [Subscription]
  *     summary: Verify payment & activate premium
  *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               orderId: { type: string }
- *               paymentId: { type: string }
- *               signature: { type: string }
- *     responses:
- *       200: { description: Subscription activated }
  */
 router.post('/verify-payment', protect, verifyPayment);
+
+/**
+ * @swagger
+ * /subscription/checkout/{subscriptionId}:
+ *   get:
+ *     tags: [Subscription]
+ *     summary: Checkout page (HTML with Razorpay embedded) for Expo WebBrowser
+ */
+router.get('/checkout/:subscriptionId', checkoutPage);
+
+/**
+ * @swagger
+ * /subscription/checkout-verify:
+ *   post:
+ *     tags: [Subscription]
+ *     summary: Verify payment from checkout HTML page
+ */
+router.post('/checkout-verify', checkoutVerify);
 
 /**
  * @swagger
@@ -70,8 +84,6 @@ router.post('/verify-payment', protect, verifyPayment);
  *     tags: [Subscription]
  *     summary: Get my subscription status
  *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200: { description: Subscription details }
  */
 router.get('/my', protect, getMySubscription);
 
@@ -82,8 +94,6 @@ router.get('/my', protect, getMySubscription);
  *     tags: [Subscription]
  *     summary: Cancel subscription
  *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200: { description: Subscription cancelled }
  */
 router.post('/cancel', protect, cancelSubscription);
 

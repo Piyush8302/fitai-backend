@@ -38,6 +38,10 @@ const userSchema = new mongoose.Schema({
   subscriptionPlan: { type: String, enum: ['free', 'monthly', 'yearly'], default: 'free' },
   subscriptionExpiry: { type: Date },
 
+  // Chat limits (free users)
+  dailyChatCount: { type: Number, default: 0 },
+  lastChatDate: { type: String }, // 'YYYY-MM-DD'
+
   // App
   isProfileComplete: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },

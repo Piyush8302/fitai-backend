@@ -98,13 +98,42 @@ Rules:
   return null;
 };
 
+const FREE_DAILY_LIMIT = 10;
+
 // @desc    Send message to AI Health Assistant
 exports.sendMessage = async (req, res, next) => {
   try {
     const { message } = req.body;
     if (!message) return res.status(400).json({ success: false, message: 'Message is required' });
 
+    const User = require('../models/User');
     const user = req.user;
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // Check if premium expired
+    if (user.isPremium && user.subscriptionExpiry && new Date(user.subscriptionExpiry) < new Date()) {
+      await User.findByIdAndUpdate(user.id, { isPremium: false, subscriptionPlan: 'free' });
+      user.isPremium = false;
+    }
+
+    // Reset daily count if new day
+    let chatCount = user.dailyChatCount || 0;
+    if (user.lastChatDate !== todayStr) chatCount = 0;
+
+    // Check daily limit for free users
+    if (!user.isPremium && chatCount >= FREE_DAILY_LIMIT) {
+      return res.json({
+        success: false,
+        limitReached: true,
+        remaining: 0,
+        limit: FREE_DAILY_LIMIT,
+        message: `You've used all ${FREE_DAILY_LIMIT} free messages today. Upgrade to Premium for unlimited AI chat!`,
+      });
+    }
+
+    // Increment chat count
+    chatCount += 1;
+    await User.findByIdAndUpdate(user.id, { dailyChatCount: chatCount, lastChatDate: todayStr });
 
     // Get last 6 messages for context
     const recentMessages = await ChatMessage.find({ user: user.id })
@@ -122,7 +151,8 @@ exports.sendMessage = async (req, res, next) => {
 
     await ChatMessage.create({ user: user.id, role: 'assistant', message: aiResponse });
 
-    res.json({ success: true, data: { reply: aiResponse } });
+    const remaining = user.isPremium ? -1 : Math.max(0, FREE_DAILY_LIMIT - chatCount);
+    res.json({ success: true, data: { reply: aiResponse, remaining, isPremium: user.isPremium || false } });
   } catch (error) {
     next(error);
   }
