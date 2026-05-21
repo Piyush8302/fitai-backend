@@ -6,7 +6,6 @@ const {
   verifyPayment,
   checkoutPage,
   checkoutCallback,
-  checkoutVerify,
   getMySubscription,
   cancelSubscription,
 } = require('../controllers/subscriptionController');
@@ -77,15 +76,6 @@ router.get('/checkout/:subscriptionId', checkoutPage);
  *     summary: Razorpay redirect callback after payment
  */
 router.post('/checkout-callback/:subscriptionId', checkoutCallback);
-
-/**
- * @swagger
- * /subscription/checkout-verify:
- *   post:
- *     tags: [Subscription]
- *     summary: Verify payment from checkout HTML page
- */
-router.post('/checkout-verify', checkoutVerify);
 
 /**
  * @swagger
