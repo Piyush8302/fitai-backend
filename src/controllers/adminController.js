@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Workout = require('../models/Workout');
 const DietPlan = require('../models/DietPlan');
@@ -57,13 +58,19 @@ exports.getUsers = async (req, res, next) => {
 // @desc    Get user details
 exports.getUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(req.params.id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const subscriptions = await Subscription.find({ user: req.params.id }).sort({ createdAt: -1 }).limit(5);
-    const recentTracking = await Tracking.find({ user: req.params.id }).sort({ date: -1 }).limit(7);
+    const [subscriptions, recentTracking, chatHistory, totalWorkoutDays] = await Promise.all([
+      Subscription.find({ user: req.params.id }).sort({ createdAt: -1 }).limit(10),
+      Tracking.find({ user: req.params.id }).sort({ date: -1 }).limit(14),
+      // Count total chat messages
+      mongoose.model('ChatHistory')?.countDocuments?.({ user: req.params.id }).catch(() => 0) || Promise.resolve(0),
+      // Count days with workout
+      Tracking.countDocuments({ user: req.params.id, workoutCompleted: true }),
+    ]);
 
-    res.json({ success: true, data: { user, subscriptions, recentTracking } });
+    res.json({ success: true, data: { user, subscriptions, recentTracking, totalWorkoutDays } });
   } catch (error) {
     next(error);
   }

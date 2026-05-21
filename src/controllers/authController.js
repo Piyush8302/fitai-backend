@@ -374,15 +374,17 @@ exports.deleteAccount = async (req, res, next) => {
 exports.updateProfile = async (req, res, next) => {
   try {
     const fields = ['name', 'age', 'gender', 'height', 'weight', 'targetWeight', 'activityLevel', 'fitnessGoal', 'dietPreference', 'avatar'];
-    const updates = {};
-    fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    fields.forEach(f => { if (req.body[f] !== undefined) user[f] = req.body[f]; });
 
     // Mark profile complete if essentials provided
-    if (req.body.age && req.body.gender && req.body.height && req.body.weight && req.body.fitnessGoal) {
-      updates.isProfileComplete = true;
+    if (user.age && user.gender && user.height && user.weight && user.fitnessGoal) {
+      user.isProfileComplete = true;
     }
 
-    const user = await User.findByIdAndUpdate(req.user.id, updates, { new: true, runValidators: true });
+    await user.save(); // triggers pre-save hook → recalculates BMI, BMR, dailyCalories, proteinNeed
     res.json({ success: true, user });
   } catch (error) {
     next(error);
