@@ -35,14 +35,17 @@ exports.getToday = async (req, res, next) => {
 
     let tracking = await Tracking.findOne({ user: req.user.id, date: today });
 
-    // Always compute goal-adjusted calorie target
+    // Research-based calorie targets (ICMR 2020, ACSM, ISSN)
+    // Safe deficit: TDEE - 500 (never below BMR) for ~0.5 kg/week loss
+    // Surplus: +300-400 for lean gain
     const bmr = req.user.bmr || 1500;
     const tdee = req.user.dailyCalories || 2000;
+    const safeDeficit = Math.max(bmr, tdee - 500);
     const goalCalMap = {
-      weight_loss: bmr,
-      fat_loss: bmr,
-      weight_gain: Math.round(tdee * 1.2),
-      muscle_building: Math.round(tdee * 1.15),
+      weight_loss: safeDeficit,
+      fat_loss: safeDeficit,
+      weight_gain: Math.round(tdee + 400),
+      muscle_building: Math.round(tdee + 300),
       height_growth: Math.round(tdee * 1.1),
       gym_workout: Math.round(tdee * 1.1),
       home_workout: tdee,
