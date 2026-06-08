@@ -98,10 +98,29 @@ const HINDI_ALIASES = {
   akhrot: 'walnut', walnut: 'walnut',
   mungfali: 'peanut', moongfali: 'peanut', peanut: 'peanut',
   pista: 'pistachio', pistachio: 'pistachio',
-  // Others
+  // More Vegetables (Hindi)
+  kathal: 'jackfruit', jackfruit: 'jackfruit',
+  arbi: 'taro', arvi: 'taro', taro: 'taro',
+  suran: 'yam', jimikand: 'yam', yam: 'yam',
+  saag: 'saag', sarson: 'saag', 'sarson ka saag': 'saag',
+  methi: 'fenugreek', fenugreek: 'fenugreek',
+  kaddu: 'pumpkin', sitafal: 'pumpkin', pumpkin: 'pumpkin',
+  parval: 'pointed gourd', parwal: 'pointed gourd',
+  sem: 'beans', beans: 'beans', 'french beans': 'beans',
+  chaulai: 'amaranth', rajgira: 'amaranth',
+  'kachcha kela': 'raw banana', 'raw banana': 'raw banana',
+  sahjan: 'drumstick', drumstick: 'drumstick', moringa: 'drumstick',
+  // More misc
   soya: 'soya', tofu: 'tofu', 'soy chunk': 'soya chunks',
   protein: 'whey protein', whey: 'whey protein',
   oats: 'oats', daliya: 'oats', dalia: 'oats',
+  atta: 'wheat flour', maida: 'refined flour', besan: 'gram flour',
+  suji: 'semolina', sooji: 'semolina', rava: 'semolina',
+  popcorn: 'popcorn', makhana: 'fox nuts', 'fox nut': 'fox nuts',
+  murmura: 'puffed rice', 'puffed rice': 'puffed rice',
+  chivda: 'mixture', namkeen: 'mixture',
+  papad: 'papad', achar: 'pickle', pickle: 'pickle',
+  chutney: 'chutney',
 };
 
 // Blocked foods (no beef/pork)
@@ -481,4 +500,27 @@ const FOOD_DATABASE = [
   { id: 191, name: 'Honey (Shahad)', hindiName: 'शहद', aliases: ['shahad', 'madhu'], calories: 64, protein: 0.1, carbs: 17, fat: 0, fiber: 0, serving: '1 tbsp (21g)', category: 'fats', source: 'international', isVeg: true },
   { id: 192, name: 'Urad Dal', hindiName: 'उड़द दाल', aliases: ['urad', 'black gram'], calories: 115, protein: 8, carbs: 19, fat: 0.6, fiber: 4.5, serving: '1 bowl (150ml)', category: 'pulses', source: 'indian', isVeg: true },
   { id: 193, name: 'Dalia (Broken Wheat)', hindiName: 'दलिया', aliases: ['daliya', 'bulgar'], calories: 140, protein: 5, carbs: 28, fat: 1, fiber: 4, serving: '1 bowl (150g)', category: 'grains', source: 'indian', isVeg: true },
+
+  // === MISSING INDIAN VEGETABLES ===
+  { id: 194, name: 'Jackfruit (Kathal)', hindiName: 'कटहल', aliases: ['kathal', 'katahal', 'kathar'], calories: 95, protein: 1.7, carbs: 23, fat: 0.6, fiber: 1.5, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+  { id: 195, name: 'Taro (Arbi)', hindiName: 'अरबी', aliases: ['arbi', 'arvi', 'colocasia'], calories: 112, protein: 1.5, carbs: 26, fat: 0.2, fiber: 4.1, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+  { id: 196, name: 'Yam (Suran)', hindiName: 'सूरन', aliases: ['suran', 'jimikand', 'elephant foot'], calories: 118, protein: 1.5, carbs: 28, fat: 0.2, fiber: 4, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+  { id: 197, name: 'Sarson Ka Saag', hindiName: 'सरसों का साग', aliases: ['saag', 'sarson', 'mustard greens'], calories: 90, protein: 4, carbs: 8, fat: 5, fiber: 3, serving: '1 bowl (150g)', category: 'curry', source: 'indian', isVeg: true },
+  { id: 198, name: 'Methi Sabzi', hindiName: 'मेथी', aliases: ['methi', 'fenugreek'], calories: 50, protein: 3, carbs: 6, fat: 1, fiber: 3, serving: '1 bowl (100g)', category: 'curry', source: 'indian', isVeg: true },
+  { id: 199, name: 'Pumpkin (Kaddu)', hindiName: 'कद्दू', aliases: ['kaddu', 'sitafal', 'petha'], calories: 26, protein: 1, carbs: 6.5, fat: 0.1, fiber: 0.5, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+  { id: 200, name: 'Drumstick (Sahjan)', hindiName: 'सहजन', aliases: ['sahjan', 'moringa', 'shevga'], calories: 37, protein: 2.1, carbs: 8.5, fat: 0.2, fiber: 2, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+  { id: 201, name: 'Raw Banana Sabzi', hindiName: 'कच्चा केला', aliases: ['kachcha kela', 'raw banana', 'plantain'], calories: 122, protein: 1.3, carbs: 32, fat: 0.4, fiber: 2.3, serving: '100g', category: 'vegetables', source: 'indian', isVeg: true },
+
+  // === MISSING COMMON ITEMS ===
+  { id: 202, name: 'Makhana (Fox Nuts)', hindiName: 'मखाना', aliases: ['makhana', 'fox nut', 'lotus seeds'], calories: 347, protein: 9.7, carbs: 77, fat: 0.1, fiber: 7.6, serving: '100g dry', category: 'snacks', source: 'indian', isVeg: true },
+  { id: 203, name: 'Popcorn (Plain)', aliases: ['popcorn'], calories: 375, protein: 11, carbs: 74, fat: 4.3, fiber: 15, serving: '100g', category: 'snacks', source: 'international', isVeg: true },
+  { id: 204, name: 'Puffed Rice (Murmura)', hindiName: 'मुरमुरा', aliases: ['murmura', 'puffed rice', 'kurmura', 'mamra'], calories: 400, protein: 6, carbs: 90, fat: 0.5, fiber: 1, serving: '100g', category: 'snacks', source: 'indian', isVeg: true },
+  { id: 209, name: 'Semolina (Suji/Rava)', hindiName: 'सूजी', aliases: ['suji', 'sooji', 'rava', 'semolina'], calories: 360, protein: 13, carbs: 73, fat: 1.1, fiber: 3.9, serving: '100g dry', category: 'grains', source: 'indian', isVeg: true },
+  { id: 210, name: 'Gram Flour (Besan)', hindiName: 'बेसन', aliases: ['besan', 'gram flour', 'chickpea flour'], calories: 387, protein: 22, carbs: 58, fat: 7, fiber: 10, serving: '100g', category: 'grains', source: 'indian', isVeg: true },
+  { id: 211, name: 'Papad', hindiName: 'पापड़', aliases: ['papad', 'papadum'], calories: 55, protein: 3, carbs: 8, fat: 1.5, fiber: 1, serving: '1 piece (15g)', category: 'sides', source: 'indian', isVeg: true },
+  { id: 212, name: 'Pickle (Achar)', hindiName: 'अचार', aliases: ['achar', 'pickle'], calories: 40, protein: 0.5, carbs: 4, fat: 3, fiber: 1, serving: '1 tbsp (15g)', category: 'sides', source: 'indian', isVeg: true },
+  { id: 213, name: 'Green Chutney', hindiName: 'हरी चटनी', aliases: ['chutney', 'mint chutney', 'pudina chutney'], calories: 20, protein: 1, carbs: 3, fat: 0.5, fiber: 1, serving: '1 tbsp (15g)', category: 'sides', source: 'indian', isVeg: true },
+  { id: 214, name: 'Makki Ki Roti', hindiName: 'मक्की की रोटी', aliases: ['makki roti', 'corn roti', 'makai roti'], calories: 110, protein: 2.5, carbs: 22, fat: 1.5, fiber: 2, serving: '1 piece', category: 'grains', source: 'indian', isVeg: true },
+  { id: 215, name: 'Falooda', hindiName: 'फालूदा', aliases: ['falooda', 'faluda'], calories: 250, protein: 4, carbs: 45, fat: 6, fiber: 0.5, serving: '1 glass (250ml)', category: 'dessert', source: 'indian', isVeg: true },
+  { id: 216, name: 'Kulfi', hindiName: 'कुल्फी', aliases: ['kulfi'], calories: 160, protein: 4, carbs: 20, fat: 7, fiber: 0, serving: '1 piece (80g)', category: 'dessert', source: 'indian', isVeg: true },
 ];
