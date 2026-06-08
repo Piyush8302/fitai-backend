@@ -178,12 +178,15 @@ function smartSearch(foods, query) {
 }
 
 // External API fallback — USDA FoodData Central (free, no signup needed)
+const nodeFetch = require('node-fetch');
+const fetchFn = typeof globalThis.fetch === 'function' ? globalThis.fetch : nodeFetch;
+
 async function searchExternalAPI(query) {
   try {
     const apiKey = process.env.USDA_API_KEY || 'DEMO_KEY';
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetchFn(
       `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(query)}&pageSize=5&api_key=${apiKey}`,
       { signal: controller.signal }
     );
@@ -216,6 +219,7 @@ async function searchExternalAPI(query) {
         };
       });
   } catch (e) {
+    console.log('[FoodSearch] External API error:', e.message);
     return [];
   }
 }
