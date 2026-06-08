@@ -177,42 +177,44 @@ function smartSearch(foods, query) {
   return scored.filter(f => f._score > 0).sort((a, b) => b._score - a._score);
 }
 
-// External API fallback for unknown foods (CalorieNinjas - free)
+// External API fallback — USDA FoodData Central (free, no signup needed)
 async function searchExternalAPI(query) {
-  const apiKey = process.env.CALORIENINJAS_API_KEY;
-  if (!apiKey) return [];
-
   try {
+    const apiKey = process.env.USDA_API_KEY || 'DEMO_KEY';
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    // Try api-ninjas.com (same company as calorieninjas, same key works)
-    const res = await fetch(`https://api.api-ninjas.com/v1/nutrition?query=${encodeURIComponent(query)}`, {
-      headers: { 'X-Api-Key': apiKey },
-      signal: controller.signal,
-    });
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(
+      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(query)}&pageSize=5&dataType=Foundation,SR%20Legacy&api_key=${apiKey}`,
+      { signal: controller.signal }
+    );
     clearTimeout(timeout);
     if (!res.ok) return [];
     const data = await res.json();
-    // API Ninjas returns array directly, CalorieNinjas returns { items: [] }
-    const items = Array.isArray(data) ? data : (data.items || []);
-    if (!items.length) return [];
+    if (!data.foods || !data.foods.length) return [];
 
-    return items
-      .filter(item => !BLOCKED_FOODS.some(b => item.name.toLowerCase().includes(b)))
-      .map((item, idx) => ({
-        id: 9000 + idx,
-        name: item.name.charAt(0).toUpperCase() + item.name.slice(1),
-        calories: Math.round(item.calories),
-        protein: parseFloat(item.protein_g.toFixed(1)),
-        carbs: parseFloat(item.carbs_total_g.toFixed(1)),
-        fat: parseFloat(item.fat_total_g.toFixed(1)),
-        fiber: parseFloat((item.fiber_g || 0).toFixed(1)),
-        serving: `${item.serving_size_g}g`,
-        category: 'search',
-        source: 'nutrition_api',
-        isVeg: !['chicken', 'fish', 'meat', 'egg', 'prawn', 'shrimp', 'lamb', 'mutton', 'turkey', 'duck', 'salmon', 'tuna']
-          .some(m => item.name.toLowerCase().includes(m)),
-      }));
+    return data.foods
+      .filter(f => !BLOCKED_FOODS.some(b => f.description.toLowerCase().includes(b)))
+      .map((f, idx) => {
+        const getNutrient = (name) => {
+          const n = f.foodNutrients?.find(n => n.nutrientName === name);
+          return n ? parseFloat(n.value) || 0 : 0;
+        };
+        const name = f.description.split(',')[0].trim(); // Take first part before comma
+        return {
+          id: 9000 + idx,
+          name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),
+          calories: Math.round(getNutrient('Energy')),
+          protein: parseFloat(getNutrient('Protein').toFixed(1)),
+          carbs: parseFloat(getNutrient('Carbohydrate, by difference').toFixed(1)),
+          fat: parseFloat(getNutrient('Total lipid (fat)').toFixed(1)),
+          fiber: parseFloat(getNutrient('Fiber, total dietary').toFixed(1)),
+          serving: '100g',
+          category: 'search',
+          source: 'usda',
+          isVeg: !['chicken', 'fish', 'meat', 'egg', 'prawn', 'shrimp', 'lamb', 'mutton', 'turkey', 'duck', 'salmon', 'tuna', 'pork', 'beef', 'ostrich', 'goat']
+            .some(m => f.description.toLowerCase().includes(m)),
+        };
+      });
   } catch (e) {
     return [];
   }
