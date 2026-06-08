@@ -185,16 +185,19 @@ async function searchExternalAPI(query) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(`https://api.calorieninjas.com/v1/nutrition?query=${encodeURIComponent(query)}`, {
+    // Try api-ninjas.com (same company as calorieninjas, same key works)
+    const res = await fetch(`https://api.api-ninjas.com/v1/nutrition?query=${encodeURIComponent(query)}`, {
       headers: { 'X-Api-Key': apiKey },
       signal: controller.signal,
     });
     clearTimeout(timeout);
     if (!res.ok) return [];
     const data = await res.json();
-    if (!data.items || !data.items.length) return [];
+    // API Ninjas returns array directly, CalorieNinjas returns { items: [] }
+    const items = Array.isArray(data) ? data : (data.items || []);
+    if (!items.length) return [];
 
-    return data.items
+    return items
       .filter(item => !BLOCKED_FOODS.some(b => item.name.toLowerCase().includes(b)))
       .map((item, idx) => ({
         id: 9000 + idx,
