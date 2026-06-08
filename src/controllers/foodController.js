@@ -184,7 +184,7 @@ async function searchExternalAPI(query) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(
-      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(query)}&pageSize=5&dataType=Foundation,SR%20Legacy&api_key=${apiKey}`,
+      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(query)}&pageSize=5&api_key=${apiKey}`,
       { signal: controller.signal }
     );
     clearTimeout(timeout);
