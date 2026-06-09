@@ -160,13 +160,11 @@ exports.cashfreePay = async (req, res, next) => {
     }
 
     // Step 2: Initiate UPI Collect to user's VPA
-    const payRes = await fetchFn(`${cf.baseUrl}/orders/${orderId}/pay`, {
+    const payRes = await fetchFn(`${cf.baseUrl}/orders/pay`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-client-id': cf.appId,
-        'x-client-secret': cf.secretKey,
-        'x-api-version': '2023-08-01',
+        'x-api-version': '2022-09-01',
       },
       body: JSON.stringify({
         payment_session_id: orderData.payment_session_id,
@@ -179,9 +177,10 @@ exports.cashfreePay = async (req, res, next) => {
       }),
     });
     const payData = await payRes.json();
-    if (!payRes.ok) {
+    if (!payRes.ok || payData.payment_status === 'FAILED') {
       console.log('[Cashfree] Pay error:', JSON.stringify(payData));
-      return res.status(400).json({ success: false, message: payData.message || 'Failed to send UPI request' });
+      const errMsg = payData.payment_message || payData.message || 'Failed to send UPI request';
+      return res.status(400).json({ success: false, message: errMsg });
     }
 
     // Step 3: Save subscription
