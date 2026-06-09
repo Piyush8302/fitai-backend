@@ -128,15 +128,17 @@ exports.cashfreePay = async (req, res, next) => {
     const amount = PLANS[plan].price;
     const orderId = `FITAI_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
+    const CF_HEADERS = {
+      'Content-Type': 'application/json',
+      'x-client-id': cf.appId,
+      'x-client-secret': cf.secretKey,
+      'x-api-version': '2022-09-01',
+    };
+
     // Step 1: Create Cashfree order
     const orderRes = await fetchFn(`${cf.baseUrl}/orders`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-client-id': cf.appId,
-        'x-client-secret': cf.secretKey,
-        'x-api-version': '2023-08-01',
-      },
+      headers: CF_HEADERS,
       body: JSON.stringify({
         order_id: orderId,
         order_amount: amount,
@@ -148,7 +150,6 @@ exports.cashfreePay = async (req, res, next) => {
           customer_phone: req.user.phone || '9999999999',
         },
         order_meta: {
-          return_url: `https://fitai-backend-icbh.onrender.com/api/subscription/cashfree-callback?order_id=${orderId}`,
           notify_url: `https://fitai-backend-icbh.onrender.com/api/subscription/cashfree-webhook`,
         },
       }),
@@ -159,15 +160,17 @@ exports.cashfreePay = async (req, res, next) => {
       return res.status(400).json({ success: false, message: orderData.message || 'Failed to create order' });
     }
 
+    const sessionId = orderData.payment_session_id;
+    if (!sessionId) {
+      return res.status(400).json({ success: false, message: 'Could not get payment session' });
+    }
+
     // Step 2: Initiate UPI Collect to user's VPA
     const payRes = await fetchFn(`${cf.baseUrl}/orders/pay`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-version': '2022-09-01',
-      },
+      headers: CF_HEADERS,
       body: JSON.stringify({
-        payment_session_id: orderData.payment_session_id,
+        payment_session_id: sessionId,
         payment_method: {
           upi: {
             channel: 'collect',
@@ -177,8 +180,8 @@ exports.cashfreePay = async (req, res, next) => {
       }),
     });
     const payData = await payRes.json();
+    console.log('[Cashfree] Pay response:', JSON.stringify(payData).substring(0, 200));
     if (!payRes.ok || payData.payment_status === 'FAILED') {
-      console.log('[Cashfree] Pay error:', JSON.stringify(payData));
       const errMsg = payData.payment_message || payData.message || 'Failed to send UPI request';
       return res.status(400).json({ success: false, message: errMsg });
     }
