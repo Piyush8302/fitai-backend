@@ -10,6 +10,9 @@ const {
   cancelSubscription,
   upiPay,
   upiConfirm,
+  cashfreePay,
+  cashfreeWebhook,
+  cashfreeStatus,
 } = require('../controllers/subscriptionController');
 const { protect } = require('../middleware/auth');
 
@@ -102,5 +105,10 @@ router.post('/cancel', protect, cancelSubscription);
 // === UPI Direct Payment ===
 router.post('/upi-pay', protect, upiPay);
 router.post('/upi-confirm', protect, upiConfirm);
+
+// === Cashfree UPI Collect ===
+router.post('/cashfree-pay', protect, cashfreePay);
+router.post('/cashfree-webhook', cashfreeWebhook); // No auth — Cashfree calls this
+router.get('/cashfree-status/:orderId', protect, cashfreeStatus);
 
 module.exports = router;

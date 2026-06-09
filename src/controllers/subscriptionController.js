@@ -1,6 +1,17 @@
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const crypto = require('crypto');
+const nodeFetch = require('node-fetch');
+const fetchFn = typeof globalThis.fetch === 'function' ? globalThis.fetch : nodeFetch;
+
+// Cashfree config
+const getCashfreeConfig = () => ({
+  appId: process.env.CASHFREE_APP_ID,
+  secretKey: process.env.CASHFREE_SECRET_KEY,
+  baseUrl: process.env.CASHFREE_ENV === 'PROD'
+    ? 'https://api.cashfree.com/pg'
+    : 'https://sandbox.cashfree.com/pg',
+});
 
 // Lazy-init Razorpay (only when keys exist)
 let razorpayInstance = null;
@@ -97,6 +108,198 @@ exports.upiPay = async (req, res, next) => {
         amount,
         plan,
         txnId,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Cashfree UPI Collect — sends payment notification to user's UPI app
+exports.cashfreePay = async (req, res, next) => {
+  try {
+    const { plan, upiId } = req.body;
+    if (!plan || !PLANS[plan]) return res.status(400).json({ success: false, message: 'Invalid plan' });
+    if (!upiId || !upiId.includes('@')) return res.status(400).json({ success: false, message: 'Valid UPI ID required (e.g. name@ybl)' });
+
+    const cf = getCashfreeConfig();
+    if (!cf.appId) return res.status(500).json({ success: false, message: 'Payment gateway not configured' });
+
+    const amount = PLANS[plan].price;
+    const orderId = `FITAI_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // Step 1: Create Cashfree order
+    const orderRes = await fetchFn(`${cf.baseUrl}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': cf.appId,
+        'x-client-secret': cf.secretKey,
+        'x-api-version': '2023-08-01',
+      },
+      body: JSON.stringify({
+        order_id: orderId,
+        order_amount: amount,
+        order_currency: 'INR',
+        customer_details: {
+          customer_id: req.user.id,
+          customer_name: req.user.name || 'FitAI User',
+          customer_email: req.user.email || 'user@fitai.com',
+          customer_phone: req.user.phone || '9999999999',
+        },
+        order_meta: {
+          return_url: `https://fitai-backend-icbh.onrender.com/api/subscription/cashfree-callback?order_id=${orderId}`,
+          notify_url: `https://fitai-backend-icbh.onrender.com/api/subscription/cashfree-webhook`,
+        },
+      }),
+    });
+    const orderData = await orderRes.json();
+    if (!orderRes.ok) {
+      console.log('[Cashfree] Order error:', JSON.stringify(orderData));
+      return res.status(400).json({ success: false, message: orderData.message || 'Failed to create order' });
+    }
+
+    // Step 2: Initiate UPI Collect to user's VPA
+    const payRes = await fetchFn(`${cf.baseUrl}/orders/${orderId}/pay`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': cf.appId,
+        'x-client-secret': cf.secretKey,
+        'x-api-version': '2023-08-01',
+      },
+      body: JSON.stringify({
+        payment_session_id: orderData.payment_session_id,
+        payment_method: {
+          upi: {
+            channel: 'collect',
+            upi_id: upiId,
+          },
+        },
+      }),
+    });
+    const payData = await payRes.json();
+    if (!payRes.ok) {
+      console.log('[Cashfree] Pay error:', JSON.stringify(payData));
+      return res.status(400).json({ success: false, message: payData.message || 'Failed to send UPI request' });
+    }
+
+    // Step 3: Save subscription
+    const subscription = await Subscription.create({
+      user: req.user.id,
+      plan,
+      amount: amount * 100,
+      status: 'pending',
+      paymentMethod: 'upi',
+      orderId: orderId,
+      upiTransactionId: upiId,
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment request sent to your UPI app! Approve it to activate premium.',
+      data: {
+        subscriptionId: subscription._id,
+        orderId,
+        cfPaymentId: payData.cf_payment_id,
+        status: payData.payment_status,
+      },
+    });
+  } catch (error) {
+    console.log('[Cashfree] Error:', error.message);
+    next(error);
+  }
+};
+
+// @desc    Cashfree webhook — auto-verify payment
+exports.cashfreeWebhook = async (req, res) => {
+  try {
+    const { data } = req.body;
+    if (!data || !data.order || !data.payment) return res.json({ success: true });
+
+    const orderId = data.order.order_id;
+    const paymentStatus = data.payment.payment_status;
+
+    console.log(`[Cashfree Webhook] Order: ${orderId}, Status: ${paymentStatus}`);
+
+    if (paymentStatus === 'SUCCESS') {
+      const subscription = await Subscription.findOne({ orderId });
+      if (!subscription || subscription.status === 'active') return res.json({ success: true });
+
+      const startDate = new Date();
+      const endDate = new Date();
+      if (subscription.plan === 'yearly') endDate.setFullYear(endDate.getFullYear() + 1);
+      else endDate.setMonth(endDate.getMonth() + 1);
+
+      subscription.status = 'active';
+      subscription.paymentId = data.payment.cf_payment_id;
+      subscription.startDate = startDate;
+      subscription.endDate = endDate;
+      await subscription.save();
+
+      await User.findByIdAndUpdate(subscription.user, {
+        isPremium: true,
+        subscriptionPlan: subscription.plan,
+        subscriptionExpiry: endDate,
+      });
+
+      console.log(`[Cashfree] Premium activated for user ${subscription.user}`);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.log('[Cashfree Webhook] Error:', error.message);
+    res.json({ success: true }); // Always return 200 to Cashfree
+  }
+};
+
+// @desc    Check Cashfree payment status (polling from app)
+exports.cashfreeStatus = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const subscription = await Subscription.findOne({ orderId, user: req.user.id });
+    if (!subscription) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // If already active, return immediately
+    if (subscription.status === 'active') {
+      return res.json({ success: true, data: { status: 'active', subscription } });
+    }
+
+    // Check with Cashfree
+    const cf = getCashfreeConfig();
+    const statusRes = await fetchFn(`${cf.baseUrl}/orders/${orderId}`, {
+      headers: {
+        'x-client-id': cf.appId,
+        'x-client-secret': cf.secretKey,
+        'x-api-version': '2023-08-01',
+      },
+    });
+    const statusData = await statusRes.json();
+
+    if (statusData.order_status === 'PAID' && subscription.status !== 'active') {
+      // Activate premium
+      const startDate = new Date();
+      const endDate = new Date();
+      if (subscription.plan === 'yearly') endDate.setFullYear(endDate.getFullYear() + 1);
+      else endDate.setMonth(endDate.getMonth() + 1);
+
+      subscription.status = 'active';
+      subscription.startDate = startDate;
+      subscription.endDate = endDate;
+      await subscription.save();
+
+      await User.findByIdAndUpdate(subscription.user, {
+        isPremium: true,
+        subscriptionPlan: subscription.plan,
+        subscriptionExpiry: endDate,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        status: subscription.status === 'active' ? 'active' : statusData.order_status?.toLowerCase() || 'pending',
+        subscription,
       },
     });
   } catch (error) {
