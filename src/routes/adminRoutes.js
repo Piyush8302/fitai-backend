@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions, approvePayment, rejectPayment } = require('../controllers/adminController');
 const { protect, admin } = require('../middleware/auth');
 
 /**
@@ -110,5 +110,7 @@ router.put('/users/:id/deactivate', protect, admin, deactivateUser);
  *       200: { description: List of subscriptions }
  */
 router.get('/subscriptions', protect, admin, getSubscriptions);
+router.put('/subscriptions/:id/approve', protect, admin, approvePayment);
+router.put('/subscriptions/:id/reject', protect, admin, rejectPayment);
 
 module.exports = router;

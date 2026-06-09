@@ -15,6 +15,15 @@ const getRazorpay = () => {
   return razorpayInstance;
 };
 
+// UPI Config
+const UPI_ID = process.env.UPI_ID || '9889808605@slc';
+const UPI_NAME = process.env.UPI_NAME || 'FitAI Premium';
+
+const PLANS = {
+  monthly: { price: 29, duration: '1 Month', label: 'Monthly', days: 30 },
+  yearly: { price: 299, duration: '1 Year', label: 'Yearly', days: 365, originalPrice: 348, savings: '14% OFF' },
+};
+
 // @desc    Get subscription plans
 exports.getPlans = async (req, res, next) => {
   try {
@@ -22,9 +31,9 @@ exports.getPlans = async (req, res, next) => {
       {
         id: 'monthly',
         name: 'Premium Monthly',
-        price: 29,
+        price: PLANS.monthly.price,
         currency: 'INR',
-        duration: '1 Month',
+        duration: PLANS.monthly.duration,
         features: [
           'Unlimited AI Chat (no daily limit)',
           'Personalized AI Diet Plans',
@@ -36,11 +45,11 @@ exports.getPlans = async (req, res, next) => {
       {
         id: 'yearly',
         name: 'Premium Yearly',
-        price: 249,
-        originalPrice: 348,
+        price: PLANS.yearly.price,
+        originalPrice: PLANS.yearly.originalPrice,
         currency: 'INR',
-        duration: '1 Year',
-        savings: '28% OFF',
+        duration: PLANS.yearly.duration,
+        savings: PLANS.yearly.savings,
         features: [
           'Everything in Monthly',
           'Yearly Progress Reports',
@@ -50,6 +59,68 @@ exports.getPlans = async (req, res, next) => {
       },
     ];
     res.json({ success: true, data: plans });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Start UPI payment — returns UPI intent URL
+exports.upiPay = async (req, res, next) => {
+  try {
+    const { plan } = req.body;
+    if (!plan || !PLANS[plan]) {
+      return res.status(400).json({ success: false, message: 'Invalid plan. Use monthly or yearly.' });
+    }
+
+    const amount = PLANS[plan].price;
+    const txnId = `FITAI${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    // Create pending subscription
+    const subscription = await Subscription.create({
+      user: req.user.id,
+      plan,
+      amount: amount * 100, // store in paisa
+      status: 'pending',
+      paymentMethod: 'upi',
+      upiTransactionId: txnId,
+    });
+
+    // Build UPI intent URL
+    const upiUrl = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount}&cu=INR&tn=${encodeURIComponent(`FitAI ${PLANS[plan].label} Plan`)}&tr=${txnId}`;
+
+    res.json({
+      success: true,
+      data: {
+        subscriptionId: subscription._id,
+        upiUrl,
+        upiId: UPI_ID,
+        amount,
+        plan,
+        txnId,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    User confirms UPI payment with UTR number
+exports.upiConfirm = async (req, res, next) => {
+  try {
+    const { subscriptionId, utrNumber, upiApp } = req.body;
+    if (!subscriptionId || !utrNumber) {
+      return res.status(400).json({ success: false, message: 'subscriptionId and utrNumber required' });
+    }
+
+    const subscription = await Subscription.findOne({ _id: subscriptionId, user: req.user.id });
+    if (!subscription) return res.status(404).json({ success: false, message: 'Subscription not found' });
+    if (subscription.status === 'active') return res.json({ success: true, message: 'Already activated' });
+
+    subscription.utrNumber = utrNumber.trim();
+    if (upiApp) subscription.upiApp = upiApp;
+    await subscription.save();
+
+    res.json({ success: true, message: 'Payment submitted! Admin will verify and activate your premium shortly.', data: subscription });
   } catch (error) {
     next(error);
   }

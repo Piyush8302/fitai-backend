@@ -138,3 +138,52 @@ exports.getSubscriptions = async (req, res, next) => {
     next(error);
   }
 };
+
+// @desc    Approve UPI payment → activate premium
+exports.approvePayment = async (req, res, next) => {
+  try {
+    const subscription = await Subscription.findById(req.params.id);
+    if (!subscription) return res.status(404).json({ success: false, message: 'Subscription not found' });
+    if (subscription.status === 'active') return res.json({ success: true, message: 'Already active' });
+
+    const startDate = new Date();
+    const endDate = new Date();
+    const plan = subscription.plan;
+    if (plan === 'yearly') endDate.setFullYear(endDate.getFullYear() + 1);
+    else endDate.setMonth(endDate.getMonth() + 1);
+
+    subscription.status = 'active';
+    subscription.startDate = startDate;
+    subscription.endDate = endDate;
+    subscription.approvedAt = new Date();
+    subscription.approvedBy = req.user.id;
+    if (req.body.note) subscription.adminNote = req.body.note;
+    await subscription.save();
+
+    await User.findByIdAndUpdate(subscription.user, {
+      isPremium: true,
+      subscriptionPlan: plan,
+      subscriptionExpiry: endDate,
+    });
+
+    res.json({ success: true, message: 'Payment approved, premium activated!', data: subscription });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Reject UPI payment
+exports.rejectPayment = async (req, res, next) => {
+  try {
+    const subscription = await Subscription.findById(req.params.id);
+    if (!subscription) return res.status(404).json({ success: false, message: 'Subscription not found' });
+
+    subscription.status = 'rejected';
+    if (req.body.note) subscription.adminNote = req.body.note;
+    await subscription.save();
+
+    res.json({ success: true, message: 'Payment rejected', data: subscription });
+  } catch (error) {
+    next(error);
+  }
+};

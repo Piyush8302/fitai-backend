@@ -8,6 +8,8 @@ const {
   checkoutCallback,
   getMySubscription,
   cancelSubscription,
+  upiPay,
+  upiConfirm,
 } = require('../controllers/subscriptionController');
 const { protect } = require('../middleware/auth');
 
@@ -96,5 +98,9 @@ router.get('/my', protect, getMySubscription);
  *     security: [{ bearerAuth: [] }]
  */
 router.post('/cancel', protect, cancelSubscription);
+
+// === UPI Direct Payment ===
+router.post('/upi-pay', protect, upiPay);
+router.post('/upi-confirm', protect, upiConfirm);
 
 module.exports = router;
