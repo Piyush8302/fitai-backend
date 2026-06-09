@@ -185,7 +185,6 @@ async function searchExternalAPI(query) {
   try {
     const apiKey = process.env.USDA_API_KEY || 'DEMO_KEY';
     const url = `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(query)}&pageSize=5&api_key=${apiKey}`;
-    console.log('[FoodSearch] Calling USDA for:', query);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     const res = await fetchFn(
@@ -193,10 +192,8 @@ async function searchExternalAPI(query) {
       { signal: controller.signal }
     );
     clearTimeout(timeout);
-    console.log('[FoodSearch] USDA status:', res.status);
-    if (!res.ok) { console.log('[FoodSearch] USDA not ok'); return []; }
+    if (!res.ok) return [];
     const data = await res.json();
-    console.log('[FoodSearch] USDA foods found:', data.foods?.length || 0);
     if (!data.foods || !data.foods.length) return [];
 
     return data.foods
@@ -223,7 +220,6 @@ async function searchExternalAPI(query) {
         };
       });
   } catch (e) {
-    console.log('[FoodSearch] External API error:', e.message);
     return [];
   }
 }
