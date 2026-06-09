@@ -115,18 +115,17 @@ exports.upiPay = async (req, res, next) => {
   }
 };
 
-// @desc    Cashfree UPI Collect — sends payment notification to user's UPI app
+// @desc    Cashfree Payment Link — user pays via GPay/PhonePe on Cashfree page
 exports.cashfreePay = async (req, res, next) => {
   try {
-    const { plan, upiId } = req.body;
+    const { plan } = req.body;
     if (!plan || !PLANS[plan]) return res.status(400).json({ success: false, message: 'Invalid plan' });
-    if (!upiId || !upiId.includes('@')) return res.status(400).json({ success: false, message: 'Valid UPI ID required (e.g. name@ybl)' });
 
     const cf = getCashfreeConfig();
     if (!cf.appId) return res.status(500).json({ success: false, message: 'Payment gateway not configured' });
 
     const amount = PLANS[plan].price;
-    const orderId = `FITAI_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const linkId = `FITAI_${req.user.id.toString().slice(-6)}_${Date.now()}`;
 
     const CF_HEADERS = {
       'Content-Type': 'application/json',
@@ -135,76 +134,48 @@ exports.cashfreePay = async (req, res, next) => {
       'x-api-version': '2022-09-01',
     };
 
-    // Step 1: Create Cashfree order
-    const orderRes = await fetchFn(`${cf.baseUrl}/orders`, {
+    // Create Cashfree Payment Link
+    const linkRes = await fetchFn(`${cf.baseUrl}/links`, {
       method: 'POST',
       headers: CF_HEADERS,
       body: JSON.stringify({
-        order_id: orderId,
-        order_amount: amount,
-        order_currency: 'INR',
+        link_id: linkId,
+        link_amount: amount,
+        link_currency: 'INR',
+        link_purpose: `FitAI ${PLANS[plan].label} Premium`,
         customer_details: {
-          customer_id: req.user.id,
           customer_name: req.user.name || 'FitAI User',
           customer_email: req.user.email || 'user@fitai.com',
           customer_phone: req.user.phone || '9999999999',
         },
-        order_meta: {
-          notify_url: `https://fitai-backend-icbh.onrender.com/api/subscription/cashfree-webhook`,
-        },
+        link_notify: { send_sms: false, send_email: false },
+        link_meta: { upi_intent: true },
+        link_notes: { userId: req.user.id, plan },
       }),
     });
-    const orderData = await orderRes.json();
-    if (!orderRes.ok) {
-      console.log('[Cashfree] Order error:', JSON.stringify(orderData));
-      return res.status(400).json({ success: false, message: orderData.message || 'Failed to create order' });
+    const linkData = await linkRes.json();
+    if (!linkRes.ok) {
+      console.log('[Cashfree] Link error:', JSON.stringify(linkData));
+      return res.status(400).json({ success: false, message: linkData.message || 'Failed to create payment link' });
     }
 
-    const sessionId = orderData.payment_session_id;
-    if (!sessionId) {
-      return res.status(400).json({ success: false, message: 'Could not get payment session' });
-    }
-
-    // Step 2: Initiate UPI Collect to user's VPA
-    const payRes = await fetchFn(`${cf.baseUrl}/orders/pay`, {
-      method: 'POST',
-      headers: CF_HEADERS,
-      body: JSON.stringify({
-        payment_session_id: sessionId,
-        payment_method: {
-          upi: {
-            channel: 'collect',
-            upi_id: upiId,
-          },
-        },
-      }),
-    });
-    const payData = await payRes.json();
-    console.log('[Cashfree] Pay response:', JSON.stringify(payData).substring(0, 200));
-    if (!payRes.ok || payData.payment_status === 'FAILED') {
-      const errMsg = payData.payment_message || payData.message || 'Failed to send UPI request';
-      return res.status(400).json({ success: false, message: errMsg });
-    }
-
-    // Step 3: Save subscription
+    // Save subscription
     const subscription = await Subscription.create({
       user: req.user.id,
       plan,
       amount: amount * 100,
       status: 'pending',
       paymentMethod: 'upi',
-      orderId: orderId,
-      upiTransactionId: upiId,
+      orderId: linkId,
     });
 
     res.json({
       success: true,
-      message: 'Payment request sent to your UPI app! Approve it to activate premium.',
       data: {
         subscriptionId: subscription._id,
-        orderId,
-        cfPaymentId: payData.cf_payment_id,
-        status: payData.payment_status,
+        linkId,
+        paymentUrl: linkData.link_url,
+        amount,
       },
     });
   } catch (error) {
@@ -267,18 +238,18 @@ exports.cashfreeStatus = async (req, res, next) => {
       return res.json({ success: true, data: { status: 'active', subscription } });
     }
 
-    // Check with Cashfree
+    // Check with Cashfree link status
     const cf = getCashfreeConfig();
-    const statusRes = await fetchFn(`${cf.baseUrl}/orders/${orderId}`, {
+    const statusRes = await fetchFn(`${cf.baseUrl}/links/${orderId}`, {
       headers: {
         'x-client-id': cf.appId,
         'x-client-secret': cf.secretKey,
-        'x-api-version': '2023-08-01',
+        'x-api-version': '2022-09-01',
       },
     });
     const statusData = await statusRes.json();
 
-    if (statusData.order_status === 'PAID' && subscription.status !== 'active') {
+    if (statusData.link_status === 'PAID' && subscription.status !== 'active') {
       // Activate premium
       const startDate = new Date();
       const endDate = new Date();
@@ -300,7 +271,7 @@ exports.cashfreeStatus = async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        status: subscription.status === 'active' ? 'active' : statusData.order_status?.toLowerCase() || 'pending',
+        status: subscription.status === 'active' ? 'active' : statusData.link_status?.toLowerCase() || 'pending',
         subscription,
       },
     });
