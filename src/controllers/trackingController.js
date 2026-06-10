@@ -66,16 +66,23 @@ exports.getToday = async (req, res, next) => {
   }
 };
 
-// @desc    Add water intake
+// @desc    Add/remove water intake (positive or negative glasses)
 exports.addWater = async (req, res, next) => {
   try {
     const today = getTodayIST();
+    const glasses = parseInt(req.body.glasses) || 1;
 
-    const tracking = await Tracking.findOneAndUpdate(
+    let tracking = await Tracking.findOneAndUpdate(
       { user: req.user.id, date: today },
-      { $inc: { waterIntake: req.body.glasses || 1 }, $setOnInsert: { user: req.user.id, date: today } },
+      { $inc: { waterIntake: glasses }, $setOnInsert: { user: req.user.id, date: today } },
       { new: true, upsert: true }
     );
+
+    // Never allow negative water count
+    if (tracking.waterIntake < 0) {
+      tracking.waterIntake = 0;
+      await tracking.save();
+    }
 
     res.json({ success: true, data: { waterIntake: tracking.waterIntake, waterGoal: tracking.waterGoal } });
   } catch (error) {
