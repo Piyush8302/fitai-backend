@@ -78,9 +78,9 @@ exports.addWater = async (req, res, next) => {
       { new: true, upsert: true }
     );
 
-    // Never allow negative water count
-    if (tracking.waterIntake < 0) {
-      tracking.waterIntake = 0;
+    // Clamp between 0 and 20 glasses
+    if (tracking.waterIntake < 0 || tracking.waterIntake > 20) {
+      tracking.waterIntake = Math.min(20, Math.max(0, tracking.waterIntake));
       await tracking.save();
     }
 
