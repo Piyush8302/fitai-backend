@@ -26,6 +26,8 @@ const userSchema = new mongoose.Schema({
     enum: ['weight_loss', 'weight_gain', 'muscle_building', 'fat_loss', 'height_growth', 'maintenance', 'home_workout', 'gym_workout'],
   },
   dietPreference: { type: String, enum: ['veg', 'non_veg', 'vegan', 'eggetarian'], default: 'veg' },
+  goalTimeline: { type: Number }, // months to achieve goal
+  goalStartDate: { type: Date },  // when user started this goal
 
   // BMI & Health
   bmi: { type: Number },
