@@ -9,6 +9,11 @@ exports.calculateBMI = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Height and weight are required' });
     }
 
+    // Fallback to the logged-in user's saved profile so numbers stay
+    // consistent with profile/tracking (single source of truth)
+    const userAge = age || req.user?.age || 25;
+    const userGender = gender || req.user?.gender || 'male';
+
     const heightM = height / 100;
     const bmi = parseFloat((weight / (heightM * heightM)).toFixed(1));
 
@@ -19,20 +24,20 @@ exports.calculateBMI = async (req, res, next) => {
     else if (bmi < 30) { category = 'Overweight'; color = '#FFA726'; }
     else { category = 'Obese'; color = '#EF5350'; }
 
-    // BMR (Mifflin-St Jeor)
+    // BMR (Mifflin-St Jeor) — same formula as User pre-save hook
     let bmr;
-    if (gender === 'male') {
-      bmr = Math.round(10 * weight + 6.25 * height - 5 * (age || 25) + 5);
+    if (userGender === 'male') {
+      bmr = Math.round(10 * weight + 6.25 * height - 5 * userAge + 5);
     } else {
-      bmr = Math.round(10 * weight + 6.25 * height - 5 * (age || 25) - 161);
+      bmr = Math.round(10 * weight + 6.25 * height - 5 * userAge - 161);
     }
 
     // Body fat estimation (US Navy method simplified)
     let bodyFat;
-    if (gender === 'male') {
-      bodyFat = parseFloat((1.20 * bmi + 0.23 * (age || 25) - 16.2).toFixed(1));
+    if (userGender === 'male') {
+      bodyFat = parseFloat((1.20 * bmi + 0.23 * userAge - 16.2).toFixed(1));
     } else {
-      bodyFat = parseFloat((1.20 * bmi + 0.23 * (age || 25) - 5.4).toFixed(1));
+      bodyFat = parseFloat((1.20 * bmi + 0.23 * userAge - 5.4).toFixed(1));
     }
     bodyFat = Math.max(5, Math.min(50, bodyFat));
 
@@ -40,8 +45,9 @@ exports.calculateBMI = async (req, res, next) => {
     const healthyMin = parseFloat((18.5 * heightM * heightM).toFixed(1));
     const healthyMax = parseFloat((24.9 * heightM * heightM).toFixed(1));
 
-    // Daily calorie needs
-    const activityMultiplier = 1.55; // moderate
+    // Daily calorie needs — use the user's real activity level (same map as User model)
+    const multipliers = { sedentary: 1.2, lightly_active: 1.375, moderately_active: 1.55, very_active: 1.725, extra_active: 1.9 };
+    const activityMultiplier = multipliers[req.user?.activityLevel] || 1.55;
     const dailyCalories = Math.round(bmr * activityMultiplier);
 
     // Protein need
@@ -69,12 +75,17 @@ exports.calculateBMI = async (req, res, next) => {
       suggestions.push('Focus on strength training for muscle tone');
     }
 
-    // Update user if logged in
+    // Update user via save() so the pre-save hook recalculates
+    // BMI/BMR/dailyCalories consistently with profile updates
     if (req.user) {
-      await User.findByIdAndUpdate(req.user.id, {
-        height, weight, bmi, bmr, dailyCalories, proteinNeed,
-        ...(age && { age }), ...(gender && { gender }),
-      });
+      const userDoc = await User.findById(req.user.id);
+      if (userDoc) {
+        userDoc.height = height;
+        userDoc.weight = weight;
+        if (age) userDoc.age = age;
+        if (gender) userDoc.gender = gender;
+        await userDoc.save();
+      }
     }
 
     res.json({

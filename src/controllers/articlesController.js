@@ -628,3 +628,6 @@ function getSeedArticles() {
     },
   ];
 }
+
+// Expose seed data for server-start auto-seeding
+exports.getSeedArticlesData = getSeedArticles;

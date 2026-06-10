@@ -1,4 +1,5 @@
 const Tracking = require('../models/Tracking');
+const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
 
 // Helper: Get today's date in IST (UTC+5:30) at midnight
 const getTodayIST = () => {
@@ -22,7 +23,9 @@ exports.logDaily = async (req, res, next) => {
       { new: true, upsert: true, runValidators: true }
     );
 
-    res.json({ success: true, data: tracking });
+    const data = tracking.toObject();
+    data.caloriesGoal = getGoalAdjustedCalories(req.user);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -35,23 +38,7 @@ exports.getToday = async (req, res, next) => {
 
     let tracking = await Tracking.findOne({ user: req.user.id, date: today });
 
-    // Research-based calorie targets (ICMR 2020, ACSM, ISSN)
-    // Safe deficit: TDEE - 500 (never below BMR) for ~0.5 kg/week loss
-    // Surplus: +300-400 for lean gain
-    const bmr = req.user.bmr || 1500;
-    const tdee = req.user.dailyCalories || 2000;
-    const safeDeficit = Math.max(bmr, tdee - 500);
-    const goalCalMap = {
-      weight_loss: safeDeficit,
-      fat_loss: safeDeficit,
-      weight_gain: Math.round(tdee + 400),
-      muscle_building: Math.round(tdee + 300),
-      height_growth: Math.round(tdee * 1.1),
-      gym_workout: Math.round(tdee * 1.1),
-      home_workout: tdee,
-      maintenance: tdee,
-    };
-    const caloriesGoal = goalCalMap[req.user.fitnessGoal] || tdee;
+    const caloriesGoal = getGoalAdjustedCalories(req.user);
 
     if (!tracking) {
       tracking = { weight: req.user.weight, caloriesConsumed: 0, caloriesBurned: 0, waterIntake: 0, steps: 0, sleepHours: 0, workoutCompleted: false, mood: null, caloriesGoal, waterGoal: 8, stepsGoal: 10000, sleepGoal: 8, mealsLogged: [], workoutMinutes: 0 };
@@ -107,7 +94,9 @@ exports.logMeal = async (req, res, next) => {
       { new: true, upsert: true }
     );
 
-    res.json({ success: true, data: tracking });
+    const data = tracking.toObject();
+    data.caloriesGoal = getGoalAdjustedCalories(req.user);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }

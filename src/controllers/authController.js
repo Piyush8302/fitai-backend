@@ -377,7 +377,14 @@ exports.updateProfile = async (req, res, next) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
+    const prevGoal = user.fitnessGoal;
     fields.forEach(f => { if (req.body[f] !== undefined) user[f] = req.body[f]; });
+
+    // Capture starting weight for goal progress — set once, reset when goal changes
+    const goalChanged = req.body.fitnessGoal !== undefined && req.body.fitnessGoal !== prevGoal;
+    if (user.weight && (!user.startWeight || goalChanged)) {
+      user.startWeight = user.weight;
+    }
 
     // Mark profile complete if essentials provided
     if (user.age && user.gender && user.height && user.weight && user.fitnessGoal) {

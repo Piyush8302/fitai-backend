@@ -1,4 +1,5 @@
 const ChatMessage = require('../models/ChatMessage');
+const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
 
 // AI integration (Groq / Gemini)
 const callAI = async (message, user, context) => {
@@ -14,7 +15,7 @@ User profile:
 - Age: ${user.age || 'unknown'}, Gender: ${user.gender || 'unknown'}
 - Weight: ${user.weight || 'unknown'}kg, Height: ${user.height || 'unknown'}cm
 - BMI: ${user.bmi || 'unknown'}, BMR: ${user.bmr || 'unknown'} cal
-- Daily calories target: ${user.dailyCalories || 'unknown'} cal
+- Daily calories target: ${getGoalAdjustedCalories(user)} cal (goal-adjusted — always quote THIS number for their daily target)
 - Protein need: ${user.proteinNeed || Math.round((user.weight || 70) * 1.6)}g
 - Fitness goal: ${user.fitnessGoal || 'general fitness'}
 - Diet preference: ${user.dietPreference || 'no preference'}
@@ -214,7 +215,7 @@ function generateSmartResponse(msg, user, context) {
   const weight = user.weight || 70;
   const height = user.height || 170;
   const goal = user.fitnessGoal || 'maintenance';
-  const calories = user.dailyCalories || 2000;
+  const calories = getGoalAdjustedCalories(user);
   const protein = user.proteinNeed || Math.round(weight * 1.6);
   const bmi = user.bmi || parseFloat((weight / ((height / 100) ** 2)).toFixed(1));
   const gender = user.gender || 'male';

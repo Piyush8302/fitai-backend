@@ -92,8 +92,25 @@ app.use(errorHandler);
 // ============ START SERVER ============
 const PORT = process.env.PORT || 5000;
 
+// Auto-seed articles when collection is empty (app never shows blank Articles screen)
+const autoSeedArticles = async () => {
+  try {
+    const Article = require('./models/Article');
+    const { getSeedArticlesData } = require('./controllers/articlesController');
+    const count = await Article.countDocuments();
+    if (count === 0 && typeof getSeedArticlesData === 'function') {
+      const articles = getSeedArticlesData();
+      await Article.insertMany(articles);
+      console.log(`📰 Auto-seeded ${articles.length} articles`);
+    }
+  } catch (e) {
+    console.log('Article auto-seed skipped:', e.message);
+  }
+};
+
 const startServer = async () => {
   await connectDB();
+  await autoSeedArticles();
   app.listen(PORT, () => {
     console.log(`\n🚀 FitAI Server running on port ${PORT}`);
     console.log(`📋 API Docs: http://localhost:${PORT}/api-docs`);

@@ -16,6 +16,7 @@ const userSchema = new mongoose.Schema({
   height: { type: Number }, // in cm
   weight: { type: Number }, // in kg
   targetWeight: { type: Number },
+  startWeight: { type: Number }, // weight when goal was set — for progress %
   activityLevel: {
     type: String,
     enum: ['sedentary', 'lightly_active', 'moderately_active', 'very_active', 'extra_active'],

@@ -235,11 +235,12 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
   const totalCaloriesPlan = meals.reduce((s, m) => s + m.totalCalories, 0);
   const totalProteinPlan = meals.reduce((s, m) => s + m.totalProtein, 0);
 
-  // Adjust for goal
-  let calAdjust = '';
-  if (goal === 'weight_loss') calAdjust = `Target: ${targetCalories - 400} cal/day (deficit)`;
-  else if (goal === 'weight_gain') calAdjust = `Target: ${targetCalories + 400} cal/day (surplus)`;
-  else calAdjust = `Target: ${targetCalories} cal/day (maintenance)`;
+  // Goal-adjusted target — same single source of truth as tracking/chat/BMI
+  const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
+  const goalTarget = getGoalAdjustedCalories({ bmr: user?.bmr, dailyCalories: user?.dailyCalories || targetCalories, fitnessGoal: goal });
+  const goalLabel = (goal === 'weight_loss' || goal === 'fat_loss') ? 'deficit'
+    : (goal === 'weight_gain' || goal === 'muscle_building') ? 'surplus' : 'maintenance';
+  const calAdjust = `Target: ${goalTarget} cal/day (${goalLabel})`;
 
   return {
     title: `${{ veg: 'Vegetarian', non_veg: 'Non-Veg', vegan: 'Vegan', eggetarian: 'Eggetarian' }[dietType] || 'Vegetarian'} ${goal.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} Diet Plan`,
