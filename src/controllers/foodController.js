@@ -196,7 +196,7 @@ async function searchExternalAPI(query) {
     const data = await res.json();
     if (!data.foods || !data.foods.length) return [];
 
-    return data.foods
+    const mapped = data.foods
       .filter(f => !BLOCKED_FOODS.some(b => f.description.toLowerCase().includes(b)))
       .map((f, idx) => {
         const getNutrient = (name) => {
@@ -219,6 +219,16 @@ async function searchExternalAPI(query) {
             .some(m => f.description.toLowerCase().includes(m)),
         };
       });
+
+    // Dedupe by name — USDA returns many variants (raw/cooked/ground) with the
+    // same base name; keep only the first (best match) per unique name
+    const seen = new Set();
+    return mapped.filter(f => {
+      const key = f.name.toLowerCase();
+      if (seen.has(key) || !f.calories) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 3);
   } catch (e) {
     return [];
   }
