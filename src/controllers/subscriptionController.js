@@ -587,7 +587,20 @@ exports.getMySubscription = async (req, res, next) => {
     }
 
     const subscription = await Subscription.findOne({ user: req.user.id, status: 'active' }).sort({ createdAt: -1 });
-    const daysLeft = subscription ? Math.max(0, Math.ceil((subscription.endDate - Date.now()) / (1000 * 60 * 60 * 24))) : 0;
+
+    // Expiry: subscription endDate → user expiry → self-heal for premium users missing both
+    let expiry = subscription?.endDate || req.user.subscriptionExpiry;
+    if (req.user.isPremium && !expiry) {
+      expiry = new Date();
+      if (req.user.subscriptionPlan === 'yearly') expiry.setFullYear(expiry.getFullYear() + 1);
+      else expiry.setMonth(expiry.getMonth() + 1);
+      await User.findByIdAndUpdate(req.user.id, { subscriptionExpiry: expiry });
+      if (subscription) { subscription.endDate = expiry; await subscription.save(); }
+    }
+
+    const daysLeft = req.user.isPremium && expiry
+      ? Math.max(0, Math.ceil((new Date(expiry) - Date.now()) / (1000 * 60 * 60 * 24)))
+      : 0;
 
     res.json({
       success: true,
@@ -604,17 +617,29 @@ exports.getMySubscription = async (req, res, next) => {
   }
 };
 
-// @desc    Cancel subscription
+// @desc    Cancel subscription (premium removed immediately, no refund)
 exports.cancelSubscription = async (req, res, next) => {
   try {
     const subscription = await Subscription.findOne({ user: req.user.id, status: 'active' });
-    if (!subscription) return res.status(404).json({ success: false, message: 'No active subscription' });
 
-    subscription.status = 'cancelled';
-    subscription.autoRenew = false;
-    await subscription.save();
+    if (!subscription && !req.user.isPremium) {
+      return res.status(404).json({ success: false, message: 'No active subscription' });
+    }
 
-    res.json({ success: true, message: 'Subscription cancelled. Premium active until ' + subscription.endDate.toLocaleDateString('en-IN') });
+    if (subscription) {
+      subscription.status = 'cancelled';
+      subscription.autoRenew = false;
+      await subscription.save();
+    }
+
+    // Remove premium immediately
+    await User.findByIdAndUpdate(req.user.id, {
+      isPremium: false,
+      subscriptionPlan: 'free',
+      subscriptionExpiry: null,
+    });
+
+    res.json({ success: true, message: 'Subscription cancelled. Premium access has been removed.' });
   } catch (error) {
     next(error);
   }
