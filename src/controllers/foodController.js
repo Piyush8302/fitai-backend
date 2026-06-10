@@ -233,26 +233,25 @@ exports.searchFood = async (req, res, next) => {
     // Diet preference filter
     if (dietPref) results = filterByDietPref(results, dietPref);
 
-    if (q) {
-      results = smartSearch(results, q);
-
-      // If few/no local results, try external API
-      if (results.length < 3 && q.length >= 2) {
-        try {
-          // Resolve Hindi alias for external search
-          const englishQuery = HINDI_ALIASES[q.toLowerCase().trim()] || q;
-          const external = await searchExternalAPI(englishQuery);
-          if (external.length > 0) {
-            // Add external results that don't duplicate local ones
-            const localNames = new Set(results.map(r => r.name.toLowerCase()));
-            const newResults = external.filter(e => !localNames.has(e.name.toLowerCase()));
-            results = [...results, ...newResults];
-          }
-        } catch (e) { /* external search failed, use local only */ }
-      }
-    }
+    if (q) results = smartSearch(results, q);
     if (category) results = results.filter(f => f.category === category);
     if (source) results = results.filter(f => f.source === source);
+
+    // External API fallback AFTER all filters — so searched foods always
+    // show even when source/category filters would exclude USDA results
+    if (q && results.length < 3 && q.length >= 2) {
+      try {
+        // Resolve Hindi alias for external search
+        const englishQuery = HINDI_ALIASES[q.toLowerCase().trim()] || q;
+        const external = await searchExternalAPI(englishQuery);
+        if (external.length > 0) {
+          // Add external results that don't duplicate local ones
+          const localNames = new Set(results.map(r => r.name.toLowerCase()));
+          const newResults = external.filter(e => !localNames.has(e.name.toLowerCase()));
+          results = [...results, ...newResults];
+        }
+      } catch (e) { /* external search failed, use local only */ }
+    }
 
     const total = results.length;
     const skip = (parseInt(page) - 1) * parseInt(limit);
