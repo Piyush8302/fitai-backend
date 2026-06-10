@@ -373,7 +373,7 @@ exports.deleteAccount = async (req, res, next) => {
 // @desc    Update profile
 exports.updateProfile = async (req, res, next) => {
   try {
-    const fields = ['name', 'age', 'gender', 'height', 'weight', 'targetWeight', 'activityLevel', 'fitnessGoal', 'dietPreference', 'avatar'];
+    const fields = ['name', 'age', 'gender', 'height', 'weight', 'targetWeight', 'activityLevel', 'fitnessGoal', 'dietPreference', 'avatar', 'goalTimeline', 'goalStartDate'];
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
