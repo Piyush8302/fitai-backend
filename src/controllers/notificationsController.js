@@ -41,6 +41,76 @@ const sendExpoPush = async (pushTokens, title, body, data = {}) => {
   }
 };
 
+// ===== DAILY CALORIE TARGET CHECK (runs via server.js scheduler at ~9 PM IST) =====
+// Compares each user's caloriesConsumed vs goal-adjusted target and pushes
+// a goal-aware notification: over/under/on-target.
+exports.runDailyCalorieCheck = async () => {
+  try {
+    const Tracking = require('../models/Tracking');
+    const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
+
+    // Today in IST (same format as tracking controller)
+    const now = new Date();
+    const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+    const today = ist.toISOString().split('T')[0];
+
+    const users = await User.find({
+      isActive: true,
+      expoPushToken: { $exists: true, $ne: null },
+      dailyCalories: { $exists: true, $ne: null },
+    }).select('_id name expoPushToken bmr dailyCalories fitnessGoal');
+
+    let sent = 0;
+    for (const user of users) {
+      try {
+        const tracking = await Tracking.findOne({ user: user._id, date: today }).select('caloriesConsumed');
+        const consumed = tracking?.caloriesConsumed || 0;
+        if (consumed <= 0) continue; // nothing logged today — skip (no spam)
+
+        const target = getGoalAdjustedCalories(user);
+        const diff = consumed - target;
+        const isGain = ['weight_gain', 'muscle_building'].includes(user.fitnessGoal);
+        const firstName = (user.name || '').split(' ')[0] || 'there';
+
+        let title, body, type;
+        if (diff > 150) {
+          if (isGain) {
+            title = '💪 Surplus Achieved!';
+            body = `Great job ${firstName}! You ate ${consumed} kcal — ${diff} above your ${target} kcal target. Perfect for gaining!`;
+            type = 'success';
+          } else {
+            title = '⚠️ Calorie Target Crossed';
+            body = `${firstName}, you ate ${consumed} kcal today — ${diff} over your ${target} kcal target. A 20-min walk can help balance it!`;
+            type = 'warning';
+          }
+        } else if (diff < -300) {
+          if (isGain) {
+            title = '🍽 Eat More to Grow!';
+            body = `${firstName}, you're ${Math.abs(diff)} kcal under your ${target} kcal target. Add a banana shake or paneer to hit your gain goal!`;
+            type = 'reminder';
+          } else {
+            title = '🥗 Eating Too Little?';
+            body = `${firstName}, only ${consumed} kcal today vs ${target} target. Eating too little slows metabolism — aim closer to target!`;
+            type = 'alert';
+          }
+        } else {
+          title = '🎯 Target Hit!';
+          body = `Perfect ${firstName}! ${consumed} kcal vs ${target} target — right on track. Keep it up! 🔥`;
+          type = 'success';
+        }
+
+        await Notification.create({ user: user._id, title, body, type, data: { screen: 'Tracking' } });
+        await sendExpoPush([user.expoPushToken], title, body, { screen: 'Tracking' });
+        sent++;
+      } catch (e) { /* skip user on error */ }
+    }
+    console.log(`[DailyCalorieCheck] ${today}: notified ${sent}/${users.length} users`);
+    return sent;
+  } catch (e) {
+    console.log('[DailyCalorieCheck] error:', e.message);
+  }
+};
+
 // @desc    Get user notifications
 exports.getNotifications = async (req, res, next) => {
   try {

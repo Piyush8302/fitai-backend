@@ -263,6 +263,35 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
     meals[best.mi].items = [best.opt];
   }
 
+  // Portion scaling: single servings often can't reach higher targets
+  // (e.g. 2200+ kcal) — bump main meals in 0.5× steps up to 2.5×
+  const scalable = ['lunch', 'dinner', 'breakfast', 'post_workout'];
+  const multOf = (m) => m._mult || 1;
+  const planTotal = () => meals.reduce((s, m) => s + Math.round(m.items[0].calories * multOf(m)), 0);
+  for (let iter = 0; iter < 20; iter++) {
+    if (planTotal() >= goalTarget - 100) break;
+    const candidates = meals.filter(m => scalable.includes(m.type) && multOf(m) < 2.5);
+    if (!candidates.length) break;
+    // bump the meal with the smallest multiplier first (spread portions evenly)
+    candidates.sort((a, b) => multOf(a) - multOf(b));
+    candidates[0]._mult = multOf(candidates[0]) + 0.5;
+  }
+  meals.forEach(m => {
+    const mult = multOf(m);
+    if (mult > 1) {
+      m.items = m.items.map(i => ({
+        ...i,
+        quantity: `${mult}× ${i.quantity}`,
+        calories: Math.round(i.calories * mult),
+        protein: parseFloat((i.protein * mult).toFixed(1)),
+        carbs: parseFloat((i.carbs * mult).toFixed(1)),
+        fat: parseFloat((i.fat * mult).toFixed(1)),
+        fiber: parseFloat(((i.fiber || 0) * mult).toFixed(1)),
+      }));
+    }
+    delete m._mult;
+  });
+
   // Calculate totals
   meals.forEach(m => {
     m.totalCalories = m.items.reduce((s, i) => s + i.calories, 0);

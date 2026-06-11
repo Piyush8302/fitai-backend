@@ -108,9 +108,27 @@ const autoSeedArticles = async () => {
   }
 };
 
+// Daily calorie-target notification — fires once at ~9 PM IST
+let lastCalorieCheckDate = null;
+const startCalorieCheckScheduler = () => {
+  setInterval(async () => {
+    try {
+      const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+      const today = ist.toISOString().split('T')[0];
+      const hour = ist.getUTCHours();
+      if (hour === 21 && lastCalorieCheckDate !== today) {
+        lastCalorieCheckDate = today;
+        const { runDailyCalorieCheck } = require('./controllers/notificationsController');
+        await runDailyCalorieCheck();
+      }
+    } catch (e) { console.log('Calorie scheduler error:', e.message); }
+  }, 10 * 60 * 1000); // check every 10 minutes
+};
+
 const startServer = async () => {
   await connectDB();
   await autoSeedArticles();
+  startCalorieCheckScheduler();
   app.listen(PORT, () => {
     console.log(`\n🚀 FitAI Server running on port ${PORT}`);
     console.log(`📋 API Docs: http://localhost:${PORT}/api-docs`);
