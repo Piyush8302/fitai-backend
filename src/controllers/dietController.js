@@ -194,9 +194,6 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
     ],
   };
 
-  // Pick random items for each meal
-  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
   // Build meal source based on diet type
   let mealSource;
   if (dietType === 'vegan') {
@@ -216,15 +213,55 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
     mealSource = vegMeals;
   }
 
-  const meals = [
-    { type: 'breakfast', time: '8:00 AM', items: [pick(mealSource.breakfast)] },
-    { type: 'mid_morning', time: '10:30 AM', items: [pick(mealSource.mid_morning)] },
-    { type: 'lunch', time: '1:00 PM', items: [pick(mealSource.lunch)] },
-    { type: 'evening_snack', time: '4:30 PM', items: [pick(mealSource.evening_snack)] },
-    { type: 'dinner', time: '8:00 PM', items: [pick(mealSource.dinner)] },
-    { type: 'pre_workout', time: '6:00 AM', items: [pick(mealSource.pre_workout)] },
-    { type: 'post_workout', time: '7:30 AM', items: [pick(mealSource.post_workout)] },
+  // Goal-adjusted target — same single source of truth as tracking/chat/BMI.
+  // The plan is built TO this budget so plan total ≈ daily target.
+  const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
+  const goalTarget = getGoalAdjustedCalories({ bmr: user?.bmr, dailyCalories: user?.dailyCalories || targetCalories, fitnessGoal: goal });
+
+  // Calorie share per meal slot (sums to 1.0)
+  const slotBudgets = {
+    breakfast: 0.20, mid_morning: 0.07, lunch: 0.27,
+    evening_snack: 0.07, dinner: 0.25, pre_workout: 0.06, post_workout: 0.08,
+  };
+
+  // Pick the option closest to the slot's calorie budget.
+  // Random among top-2 closest so "New Plan" still gives variety.
+  const pickForBudget = (arr, budget) => {
+    const sorted = [...arr].sort((a, b) => Math.abs(a.calories - budget) - Math.abs(b.calories - budget));
+    const top = sorted.slice(0, Math.min(2, sorted.length));
+    return top[Math.floor(Math.random() * top.length)];
+  };
+
+  const slots = [
+    { type: 'breakfast', time: '8:00 AM' },
+    { type: 'mid_morning', time: '10:30 AM' },
+    { type: 'lunch', time: '1:00 PM' },
+    { type: 'evening_snack', time: '4:30 PM' },
+    { type: 'dinner', time: '8:00 PM' },
+    { type: 'pre_workout', time: '6:00 AM' },
+    { type: 'post_workout', time: '7:30 AM' },
   ];
+  const meals = slots.map(s => ({
+    ...s,
+    items: [pickForBudget(mealSource[s.type] || [], Math.round(goalTarget * slotBudgets[s.type]))],
+  }));
+
+  // Greedy refinement: swap single items until plan total is within ±60 kcal of target
+  for (let iter = 0; iter < 12; iter++) {
+    const total = meals.reduce((s, m) => s + m.items[0].calories, 0);
+    const gap = Math.abs(goalTarget - total);
+    if (gap <= 60) break;
+    let best = null;
+    meals.forEach((m, mi) => {
+      (mealSource[m.type] || []).forEach(opt => {
+        const newTotal = total - m.items[0].calories + opt.calories;
+        const newGap = Math.abs(goalTarget - newTotal);
+        if (newGap < gap && (!best || newGap < best.gap)) best = { mi, opt, gap: newGap };
+      });
+    });
+    if (!best) break;
+    meals[best.mi].items = [best.opt];
+  }
 
   // Calculate totals
   meals.forEach(m => {
@@ -235,9 +272,6 @@ function generateDietPlan(goal, dietType, targetCalories, user) {
   const totalCaloriesPlan = meals.reduce((s, m) => s + m.totalCalories, 0);
   const totalProteinPlan = meals.reduce((s, m) => s + m.totalProtein, 0);
 
-  // Goal-adjusted target — same single source of truth as tracking/chat/BMI
-  const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
-  const goalTarget = getGoalAdjustedCalories({ bmr: user?.bmr, dailyCalories: user?.dailyCalories || targetCalories, fitnessGoal: goal });
   const goalLabel = (goal === 'weight_loss' || goal === 'fat_loss') ? 'deficit'
     : (goal === 'weight_gain' || goal === 'muscle_building') ? 'surplus' : 'maintenance';
   const calAdjust = `Target: ${goalTarget} cal/day (${goalLabel})`;
