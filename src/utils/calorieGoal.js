@@ -5,7 +5,8 @@
 exports.getGoalAdjustedCalories = (user) => {
   const bmr = user.bmr || 1500;
   const tdee = user.dailyCalories || 2000;
-  const safeDeficit = Math.max(bmr, tdee - 500);
+  // Floor at BMR + 100 so Target is always safely ABOVE BMR (never equal/below)
+  const safeDeficit = Math.max(bmr + 100, tdee - 500);
   const map = {
     weight_loss: safeDeficit,
     fat_loss: safeDeficit,
