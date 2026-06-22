@@ -3,7 +3,10 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const c = require('../controllers/gymController');
 
-// All gym routes require login
+// ---- PUBLIC (no login) — walk-in web check-in ----
+router.post('/public/checkin', c.webCheckIn);
+
+// All gym routes below require login
 router.use(protect);
 
 // ---- Owner / Staff ----
