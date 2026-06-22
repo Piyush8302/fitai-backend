@@ -387,89 +387,79 @@ exports.selfCheckIn = async (req, res, next) => {
 
 // ===================== PUBLIC (no app needed) =====================
 
-// @desc  Serve a lightweight registration/check-in web page (opened by scanning gym QR)
-exports.gymPublicPage = async (req, res) => {
-  try {
-    const gym = await Gym.findOne({ gymCode: req.params.gymCode });
-    const shell = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gym Check-in</title>
+const PAGE_SHELL = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gym Check-in</title>
 <style>*{box-sizing:border-box;font-family:-apple-system,Roboto,sans-serif}body{margin:0;background:#151725;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
 .card{background:#222438;border:1px solid #363a5c;border-radius:20px;padding:28px;max-width:380px;width:100%}
 h1{margin:0 0 4px;font-size:22px}.sub{color:#9092b0;margin:0 0 22px;font-size:14px}
 label{font-size:12px;color:#c2c3da;display:block;margin:14px 0 6px}
 input{width:100%;padding:14px;border-radius:12px;border:1px solid #363a5c;background:#151725;color:#fff;font-size:16px}
 button{width:100%;margin-top:22px;padding:15px;border:0;border-radius:12px;background:#6C63FF;color:#fff;font-size:16px;font-weight:700}
-.ok{text-align:center}.ok .big{font-size:48px}.muted{color:#9092b0;font-size:13px}</style></head><body><div class="card">${body}</div></body></html>`;
+a.btn{display:block;text-align:center;text-decoration:none;margin-top:18px;padding:13px;border-radius:12px;background:#6C63FF;color:#fff;font-weight:700}
+.ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}</style></head><body><div class="card">${body}</div></body></html>`;
 
-    if (!gym) return res.send(shell(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+const esc = (s) => String(s || '').replace(/[<>"'&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '&': '&amp;' }[c]));
 
-    res.send(shell(`
-      <h1>🏋️ ${gym.name}</h1>
-      <p class="sub">${gym.location || ''} — Register & check in</p>
-      <form id="f">
+// @desc  Serve registration/check-in page (uses a NATIVE form POST — no inline JS, CSP-safe)
+exports.gymPublicPage = async (req, res) => {
+  try {
+    const gym = await Gym.findOne({ gymCode: req.params.gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+    res.send(PAGE_SHELL(`
+      <h1>🏋️ ${esc(gym.name)}</h1>
+      <p class="sub">${esc(gym.location || '')} — Register & check in</p>
+      <form method="POST" action="/g/${gym.gymCode}/submit">
         <label>Your Name</label>
-        <input id="name" placeholder="e.g. Ramesh" required/>
+        <input name="name" placeholder="e.g. Ramesh" required/>
         <label>Mobile Number</label>
-        <input id="phone" type="tel" maxlength="10" placeholder="10-digit number" required/>
-        <button type="submit" id="btn">Register & Check-in</button>
-      </form>
-      <div id="res" style="display:none"></div>
-      <script>
-        var f=document.getElementById('f');
-        f.onsubmit=async function(e){
-          e.preventDefault();
-          var btn=document.getElementById('btn');
-          var name=document.getElementById('name').value.trim();
-          var phone=document.getElementById('phone').value.trim();
-          if(!name||phone.length<10){alert('Enter name & valid phone');return;}
-          btn.innerText='Please wait…';btn.disabled=true;
-          try{
-            var r=await fetch('/api/gym/public/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gymCode:'${gym.gymCode}',name:name,phone:phone})});
-            var d=await r.json();
-            f.style.display='none';
-            var res=document.getElementById('res');res.style.display='block';
-            res.innerHTML='<div class="ok"><div class="big">✅</div><h1>'+(d.message||'Done')+'</h1><p class="muted">'+(d.duplicate?'You were already checked in today.':'Attendance marked. Pay your fee at the counter.')+'</p></div>';
-          }catch(err){btn.innerText='Register & Check-in';btn.disabled=false;alert('Failed, try again');}
-        };
-      </script>`));
-  } catch (e) {
-    res.status(500).send('Error');
-  }
+        <input name="phone" type="tel" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required/>
+        <button type="submit">Register & Check-in</button>
+      </form>`));
+  } catch (e) { res.status(500).send('Error'); }
 };
 
-// @desc  Public check-in from web form (no auth) — registers walk-ins without the app
+// Shared core: register-by-phone + mark attendance. Returns a result object.
+async function doWebCheckIn(gymCode, name, phone) {
+  if (!phone || String(phone).replace(/\D/g, '').length < 10) return { error: 'Valid 10-digit phone required' };
+  const gym = await Gym.findOne({ gymCode });
+  if (!gym) return { error: 'Invalid gym QR' };
+
+  let user = await User.findOne({ phone });
+  if (!user) {
+    user = await User.create({ name: name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+  }
+  let membership = await Membership.findOne({ user: user._id, gym: gym._id });
+  const isNew = !membership;
+  if (!membership) {
+    membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
+  }
+  const day = istDay();
+  try {
+    await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
+    return { ok: true, name: user.name, gym: gym.name, isNew, duplicate: false };
+  } catch (dupErr) {
+    if (dupErr.code === 11000) return { ok: true, name: user.name, gym: gym.name, isNew: false, duplicate: true };
+    throw dupErr;
+  }
+}
+
+// @desc  Handle the native form POST → returns an HTML result page (CSP-safe, no JS)
+exports.gymPublicSubmit = async (req, res) => {
+  try {
+    const r = await doWebCheckIn(req.params.gymCode, req.body.name, req.body.phone);
+    if (r.error) {
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(req.params.gymCode)}">Try again</a></div>`));
+    }
+    const sub = r.duplicate ? 'You were already checked in today.' : r.isNew ? 'Registered & attendance marked! Pay your fee at the counter.' : 'Attendance marked. Have a great workout!';
+    res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(r.name)}!</h1><p class="muted">${esc(r.gym)}<br/>${sub}</p></div>`));
+  } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
+};
+
+// @desc  Public JSON check-in (used by the app scanner) — no auth
 exports.webCheckIn = async (req, res, next) => {
   try {
-    const { gymCode, name, phone } = req.body;
-    if (!gymCode || !phone || String(phone).length < 10) return res.status(400).json({ success: false, message: 'Name and valid phone required' });
-    const gym = await Gym.findOne({ gymCode });
-    if (!gym) return res.status(404).json({ success: false, message: 'Invalid gym QR' });
-
-    // Find or create the person by phone
-    let user = await User.findOne({ phone });
-    if (!user) {
-      user = await User.create({
-        name: name || 'Member', phone,
-        email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user',
-      });
-    }
-
-    // Register (trial) if not a member of this gym
-    let membership = await Membership.findOne({ user: user._id, gym: gym._id });
-    if (!membership) {
-      membership = await Membership.create({
-        user: user._id, gym: gym._id, plan: 'trial', fee: 0,
-        joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
-      });
-    }
-
-    const day = istDay();
-    try {
-      await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
-      return res.json({ success: true, message: `Welcome ${user.name}!`, gym: gym.name });
-    } catch (dupErr) {
-      if (dupErr.code === 11000) return res.json({ success: true, message: `Hi ${user.name}!`, gym: gym.name, duplicate: true });
-      throw dupErr;
-    }
+    const r = await doWebCheckIn(req.body.gymCode, req.body.name, req.body.phone);
+    if (r.error) return res.status(400).json({ success: false, message: r.error });
+    res.json({ success: true, message: `Welcome ${r.name}!`, gym: r.gym, duplicate: r.duplicate });
   } catch (e) { next(e); }
 };
 
