@@ -198,16 +198,23 @@ exports.getGymDashboard = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-// @desc  Attendance list for a gym (optionally by day)
+// @desc  Attendance list for a gym (filter by day or by member)
 exports.getGymAttendance = async (req, res, next) => {
   try {
     const { gymId } = req.params;
-    const { day } = req.query;
+    const { day, userId } = req.query;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
     const filter = { gym: gymId };
     if (day) filter.day = day;
+    if (userId) filter.user = userId;
     const list = await GymAttendance.find(filter).populate('user', 'name phone').sort({ checkInAt: -1 }).limit(200);
-    res.json({ success: true, count: list.length, data: list });
+
+    // Count this month's check-ins (useful when filtering by member)
+    const monthStart = new Date();
+    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const thisMonth = list.filter(a => new Date(a.checkInAt) >= monthStart).length;
+
+    res.json({ success: true, count: list.length, thisMonth, data: list });
   } catch (e) { next(e); }
 };
 
