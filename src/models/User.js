@@ -55,7 +55,9 @@ const userSchema = new mongoose.Schema({
   pendingEmail: { type: String },
   pendingPhone: { type: String },
 
-  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+  role: { type: String, enum: ['user', 'admin', 'gym_owner', 'gym_staff'], default: 'user' },
+  // For gym_staff: which gym they work at (set by the owner)
+  staffGym: { type: mongoose.Schema.Types.ObjectId, ref: 'Gym' },
 }, { timestamps: true });
 
 // Hash password

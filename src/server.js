@@ -53,6 +53,7 @@ app.use('/api/exercises', require('./routes/exerciseRoutes'));
 app.use('/api/favorites', require('./routes/favoritesRoutes'));
 app.use('/api/achievements', require('./routes/achievementsRoutes'));
 app.use('/api/notifications', require('./routes/notificationsRoutes'));
+app.use('/api/gym', require('./routes/gymRoutes'));
 
 // Health check
 app.get('/', (req, res) => {
