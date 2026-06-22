@@ -7,6 +7,9 @@ const gymCashbookSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   description: { type: String, trim: true },
   date: { type: Date, default: Date.now },
+  // 'manual' = owner added | 'membership' = auto from a member payment
+  source: { type: String, enum: ['manual', 'membership'], default: 'manual' },
+  payment: { type: mongoose.Schema.Types.ObjectId, ref: 'GymPayment' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 

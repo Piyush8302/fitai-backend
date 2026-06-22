@@ -140,6 +140,16 @@ exports.markPayment = async (req, res, next) => {
     if (amount) membership.fee = amount;
     await membership.save();
 
+    // Auto-add this payment to the cashbook as income (so owner doesn't re-enter)
+    if (amount > 0) {
+      const member = await User.findById(membership.user).select('name');
+      await GymCashbook.create({
+        gym: membership.gym, type: 'income', amount,
+        description: `Membership: ${member?.name || 'Member'}`,
+        source: 'membership', payment: payment._id, createdBy: req.user.id,
+      });
+    }
+
     res.status(201).json({ success: true, data: { payment, membership } });
   } catch (e) { next(e); }
 };
