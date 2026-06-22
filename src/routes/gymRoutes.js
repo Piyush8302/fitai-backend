@@ -16,6 +16,12 @@ router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
 router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 
+// ---- Cashbook & reports ----
+router.post('/cashbook', c.addCashEntry);
+router.get('/:gymId/cashbook', c.getCashbook);
+router.delete('/cashbook/:id', c.deleteCashEntry);
+router.get('/:gymId/report', c.getMonthlyReport);
+
 // ---- Member ----
 router.get('/my/card', c.getMyCard);                 // membership card + gyms
 router.get('/my/:gymId/attendance', c.getMyAttendance); // my history at a gym

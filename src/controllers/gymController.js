@@ -2,6 +2,7 @@ const Gym = require('../models/Gym');
 const Membership = require('../models/Membership');
 const GymAttendance = require('../models/GymAttendance');
 const GymPayment = require('../models/GymPayment');
+const GymCashbook = require('../models/GymCashbook');
 const User = require('../models/User');
 
 // ---- helpers ----
@@ -215,6 +216,94 @@ exports.getGymAttendance = async (req, res, next) => {
     const thisMonth = list.filter(a => new Date(a.checkInAt) >= monthStart).length;
 
     res.json({ success: true, count: list.length, thisMonth, data: list });
+  } catch (e) { next(e); }
+};
+
+// ===================== CASHBOOK =====================
+
+// @desc  Add income/expense entry
+exports.addCashEntry = async (req, res, next) => {
+  try {
+    const { gymId, type, amount, description, date } = req.body;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!['income', 'expense'].includes(type) || !amount) return res.status(400).json({ success: false, message: 'type and amount required' });
+    const entry = await GymCashbook.create({ gym: gymId, type, amount, description, date: date || new Date(), createdBy: req.user.id });
+    res.status(201).json({ success: true, data: entry });
+  } catch (e) { next(e); }
+};
+
+// @desc  Cashbook for a month (entries + summary)
+exports.getCashbook = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    const { month } = req.query; // 'YYYY-MM'
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    let start, end;
+    if (month) {
+      start = new Date(`${month}-01T00:00:00`);
+      end = new Date(start); end.setMonth(end.getMonth() + 1);
+    } else {
+      start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0);
+      end = new Date(start); end.setMonth(end.getMonth() + 1);
+    }
+    const entries = await GymCashbook.find({ gym: gymId, date: { $gte: start, $lt: end } }).sort({ date: -1 });
+    const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+    const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+    res.json({ success: true, data: { entries, income, expense, balance: income - expense } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Delete a cashbook entry
+exports.deleteCashEntry = async (req, res, next) => {
+  try {
+    const entry = await GymCashbook.findById(req.params.id);
+    if (!entry) return res.status(404).json({ success: false, message: 'Not found' });
+    if (!(await ownsGym(req.user, entry.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    await entry.deleteOne();
+    res.json({ success: true });
+  } catch (e) { next(e); }
+};
+
+// @desc  Monthly report data — all members with attendance + payment for the month
+exports.getMonthlyReport = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    const { month } = req.query;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    let start, end, label;
+    if (month) { start = new Date(`${month}-01T00:00:00`); }
+    else { start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0); }
+    end = new Date(start); end.setMonth(end.getMonth() + 1);
+    label = start.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+
+    const gym = await Gym.findById(gymId);
+    const memberships = await Membership.find({ gym: gymId }).populate('user', 'name phone');
+
+    const rows = await Promise.all(memberships.map(async (m) => {
+      const present = await GymAttendance.countDocuments({ gym: gymId, user: m.user._id, checkInAt: { $gte: start, $lt: end } });
+      const paidAgg = await GymPayment.find({ gym: gymId, user: m.user._id, paidDate: { $gte: start, $lt: end } });
+      const paid = paidAgg.reduce((s, p) => s + p.amount, 0);
+      return {
+        name: m.user?.name || 'Member',
+        phone: m.user?.phone || '',
+        plan: m.plan,
+        fee: m.fee,
+        present,
+        paid,
+        isDue: m.dueDate ? new Date(m.dueDate) < new Date() : false,
+        dueDate: m.dueDate,
+      };
+    }));
+
+    const totals = {
+      members: rows.length,
+      totalPresent: rows.reduce((s, r) => s + r.present, 0),
+      totalCollected: rows.reduce((s, r) => s + r.paid, 0),
+      totalDue: rows.filter(r => r.isDue).length,
+    };
+    res.json({ success: true, data: { gym: { name: gym?.name, location: gym?.location }, month: label, rows, totals } });
   } catch (e) { next(e); }
 };
 
