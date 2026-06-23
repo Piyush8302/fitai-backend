@@ -412,20 +412,26 @@ exports.gymPublicPage = async (req, res) => {
         <input name="name" placeholder="e.g. Ramesh" required/>
         <label>Mobile Number</label>
         <input name="phone" type="tel" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required/>
+        <label>Email <span style="color:#9092b0">(optional)</span></label>
+        <input name="email" type="email" placeholder="you@email.com"/>
         <button type="submit">Register & Check-in</button>
       </form>`));
   } catch (e) { res.status(500).send('Error'); }
 };
 
 // Shared core: register-by-phone + mark attendance. Returns a result object.
-async function doWebCheckIn(gymCode, name, phone) {
+async function doWebCheckIn(gymCode, name, phone, email) {
   if (!phone || String(phone).replace(/\D/g, '').length < 10) return { error: 'Valid 10-digit phone required' };
   const gym = await Gym.findOne({ gymCode });
   if (!gym) return { error: 'Invalid gym QR' };
 
+  const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
   let user = await User.findOne({ phone });
   if (!user) {
-    user = await User.create({ name: name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+    user = await User.create({ name: name || 'Member', phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+  } else if (cleanEmail && (!user.email || user.email.endsWith('@fitai.local'))) {
+    // fill a real email if we only had a placeholder
+    try { user.email = cleanEmail; await user.save(); } catch (e) { /* email taken, skip */ }
   }
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
   const isNew = !membership;
@@ -445,7 +451,7 @@ async function doWebCheckIn(gymCode, name, phone) {
 // @desc  Handle the native form POST → returns an HTML result page (CSP-safe, no JS)
 exports.gymPublicSubmit = async (req, res) => {
   try {
-    const r = await doWebCheckIn(req.params.gymCode, req.body.name, req.body.phone);
+    const r = await doWebCheckIn(req.params.gymCode, req.body.name, req.body.phone, req.body.email);
     if (r.error) {
       return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(req.params.gymCode)}">Try again</a></div>`));
     }

@@ -112,20 +112,30 @@ const autoSeedArticles = async () => {
   }
 };
 
-// Daily calorie-target notification — fires once at ~9 PM IST
+// Notification schedulers (IST). Calorie check 9 PM; gym fee reminders 10 AM & 6 PM.
 let lastCalorieCheckDate = null;
+const lastGymReminder = {}; // { '10': 'YYYY-MM-DD', '18': 'YYYY-MM-DD' }
 const startCalorieCheckScheduler = () => {
   setInterval(async () => {
     try {
       const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
       const today = ist.toISOString().split('T')[0];
       const hour = ist.getUTCHours();
+      const notif = require('./controllers/notificationsController');
+
+      // Daily calorie target — 9 PM IST
       if (hour === 21 && lastCalorieCheckDate !== today) {
         lastCalorieCheckDate = today;
-        const { runDailyCalorieCheck } = require('./controllers/notificationsController');
-        await runDailyCalorieCheck();
+        await notif.runDailyCalorieCheck();
       }
-    } catch (e) { console.log('Calorie scheduler error:', e.message); }
+      // Gym fee reminders — twice a day (10 AM & 6 PM IST)
+      for (const slot of [10, 18]) {
+        if (hour === slot && lastGymReminder[slot] !== today) {
+          lastGymReminder[slot] = today;
+          await notif.runGymFeeReminders();
+        }
+      }
+    } catch (e) { console.log('Scheduler error:', e.message); }
   }, 10 * 60 * 1000); // check every 10 minutes
 };
 

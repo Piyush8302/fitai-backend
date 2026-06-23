@@ -111,6 +111,52 @@ exports.runDailyCalorieCheck = async () => {
   }
 };
 
+// ===== GYM FEE REMINDERS (runs twice daily via scheduler) =====
+// Reminds members whose fee is due within 3 days OR overdue, until they pay.
+// When the owner marks payment, dueDate jumps forward → reminders auto-stop.
+// IMPORTANT: gym name is in the title so the user knows it's a GYM notification,
+// not a FitAI fitness notification.
+exports.runGymFeeReminders = async () => {
+  try {
+    const Membership = require('../models/Membership');
+    const now = new Date();
+    const threeDays = new Date(now.getTime() + 3 * 24 * 3600 * 1000);
+    // 60-day overdue cap so we don't spam forever on dead memberships
+    const overdueCap = new Date(now.getTime() - 60 * 24 * 3600 * 1000);
+
+    const memberships = await Membership.find({
+      fee: { $gt: 0 },
+      plan: { $nin: ['trial', 'day_pass'] },
+      status: 'active',
+      dueDate: { $lte: threeDays, $gte: overdueCap },
+    }).populate('gym', 'name').populate('user', 'name expoPushToken');
+
+    let sent = 0;
+    for (const m of memberships) {
+      const u = m.user;
+      if (!u?.expoPushToken) continue;
+      const gymName = m.gym?.name || 'Your gym';
+      const due = new Date(m.dueDate);
+      const overdue = due < now;
+      const firstName = (u.name || '').split(' ')[0] || 'there';
+
+      // Gym name in title → clearly a gym notification (not FitAI)
+      const title = `🏋️ ${gymName}`;
+      const body = overdue
+        ? `Hi ${firstName}! Your ${gymName} fee is pending 🙏 Pay at the counter & keep crushing your goals 💪`
+        : `Hi ${firstName}! Gentle reminder — your ${gymName} fee is due ${due.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}. Stay consistent, pay on time 🔥`;
+
+      await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
+      await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
+      sent++;
+    }
+    console.log(`[GymFeeReminder] sent ${sent} reminders`);
+    return sent;
+  } catch (e) {
+    console.log('[GymFeeReminder] error:', e.message);
+  }
+};
+
 // @desc    Get user notifications
 exports.getNotifications = async (req, res, next) => {
   try {
