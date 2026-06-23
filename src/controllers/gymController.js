@@ -497,24 +497,53 @@ a.btn{display:block;text-align:center;text-decoration:none;margin-top:18px;paddi
 .ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}</style></head><body><div class="card">${body}</div></body></html>`;
 
 const esc = (s) => String(s || '').replace(/[<>"'&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '&': '&amp;' }[c]));
+const getCookie = (req, name) => {
+  const m = (req.headers.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
+  return m ? decodeURIComponent(m[1]) : null;
+};
 
-// @desc  Serve registration/check-in page (uses a NATIVE form POST — no inline JS, CSP-safe)
+// @desc  Serve registration/check-in page (NATIVE form POST — CSP-safe, no JS)
+//        Returning members (phone remembered on device) get one-tap check-in.
 exports.gymPublicPage = async (req, res) => {
   try {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+
+    // Returning member? Use the phone remembered in the cookie to fetch their details.
+    const savedPhone = getCookie(req, 'gphone');
+    if (savedPhone && req.query.new !== '1') {
+      const user = await User.findOne({ phone: savedPhone });
+      if (user) {
+        const realEmail = user.email && !user.email.endsWith('@fitai.local') ? user.email : null;
+        return res.send(PAGE_SHELL(`
+          <h1>🏋️ ${esc(gym.name)}</h1>
+          <p class="sub">Welcome back! Just confirm to check in.</p>
+          <div style="background:#151725;border:1px solid #363a5c;border-radius:12px;padding:14px;margin-bottom:6px">
+            <div style="font-size:17px;font-weight:700">${esc(user.name)}</div>
+            <div class="muted">📞 ${esc(user.phone)}${realEmail ? '<br/>✉️ ' + esc(realEmail) : ''}</div>
+          </div>
+          <form method="POST" action="/g/${gym.gymCode}/submit">
+            <input type="hidden" name="phone" value="${esc(user.phone)}"/>
+            <button type="submit">✅ Check in as ${esc(user.name.split(' ')[0])}</button>
+          </form>
+          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Register new</a>`));
+      }
+    }
+
+    // New / unknown — full form (name optional: existing members can use just phone)
     res.send(PAGE_SHELL(`
       <h1>🏋️ ${esc(gym.name)}</h1>
       <p class="sub">${esc(gym.location || '')} — Register & check in</p>
       <form method="POST" action="/g/${gym.gymCode}/submit">
-        <label>Your Name</label>
-        <input name="name" placeholder="e.g. Ramesh" required/>
         <label>Mobile Number</label>
         <input name="phone" type="tel" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required/>
+        <label>Name <span style="color:#9092b0">(new members only)</span></label>
+        <input name="name" placeholder="e.g. Ramesh"/>
         <label>Email <span style="color:#9092b0">(optional)</span></label>
         <input name="email" type="email" placeholder="you@email.com"/>
         <button type="submit">Register & Check-in</button>
-      </form>`));
+      </form>
+      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Bas mobile number daalo — naam/email ki zaroorat nahi.</p>`));
   } catch (e) { res.status(500).send('Error'); }
 };
 
@@ -553,6 +582,11 @@ exports.gymPublicSubmit = async (req, res) => {
     const r = await doWebCheckIn(req.params.gymCode, req.body.name, req.body.phone, req.body.email);
     if (r.error) {
       return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(req.params.gymCode)}">Try again</a></div>`));
+    }
+    // Remember this phone on the device → next scan = one-tap check-in
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    if (phone.length >= 10) {
+      res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
     }
     const sub = r.duplicate ? 'You were already checked in today.' : r.isNew ? 'Registered & attendance marked! Pay your fee at the counter.' : 'Attendance marked. Have a great workout!';
     res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(r.name)}!</h1><p class="muted">${esc(r.gym)}<br/>${sub}</p></div>`));
