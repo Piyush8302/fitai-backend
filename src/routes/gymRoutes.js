@@ -14,6 +14,7 @@ router.post('/', c.createGym);                       // create gym
 router.get('/mine', c.getMyGyms);                    // my gyms
 router.post('/members', c.addMember);                // add member
 router.get('/:gymId/members', c.getMembers);         // gym members
+router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats

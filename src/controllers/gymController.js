@@ -100,7 +100,7 @@ exports.getMembers = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const memberships = await Membership.find({ gym: gymId })
-      .populate('user', 'name phone avatar')
+      .populate('user', 'name phone email avatar')
       .sort({ createdAt: -1 });
 
     const now = new Date();
@@ -116,6 +116,48 @@ exports.getMembers = async (req, res, next) => {
       isDue: m.dueDate ? new Date(m.dueDate) < now : false,
     }));
     res.json({ success: true, count: data.length, data });
+  } catch (e) { next(e); }
+};
+
+// @desc  Full member detail — profile + attendance + payment history
+exports.getMemberDetail = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const membership = await Membership.findById(membershipId).populate('user', 'name phone email avatar createdAt');
+    if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    const now = new Date();
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+
+    const [attendance, payments, thisMonth] = await Promise.all([
+      GymAttendance.find({ gym: membership.gym, user: membership.user._id }).sort({ checkInAt: -1 }).limit(60),
+      GymPayment.find({ gym: membership.gym, user: membership.user._id }).sort({ paidDate: -1 }).limit(30),
+      GymAttendance.countDocuments({ gym: membership.gym, user: membership.user._id, checkInAt: { $gte: monthStart } }),
+    ]);
+    const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+
+    res.json({
+      success: true,
+      data: {
+        membership: {
+          _id: membership._id,
+          user: membership.user,
+          plan: membership.plan,
+          fee: membership.fee,
+          joinDate: membership.joinDate,
+          dueDate: membership.dueDate,
+          lastPaidDate: membership.lastPaidDate,
+          status: membership.status,
+          isDue: membership.dueDate ? new Date(membership.dueDate) < now : false,
+        },
+        attendance,
+        payments,
+        thisMonth,
+        totalPaid,
+        totalCheckins: attendance.length,
+      },
+    });
   } catch (e) { next(e); }
 };
 
