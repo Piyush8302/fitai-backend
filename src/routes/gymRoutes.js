@@ -12,6 +12,10 @@ router.use(protect);
 // ---- Owner / Staff ----
 router.post('/', c.createGym);                       // create gym
 router.get('/mine', c.getMyGyms);                    // my gyms
+// All-branches combined (must be BEFORE /:gymId/* so "all" isn't read as a gymId)
+router.get('/all/members', c.getAllMembers);
+router.get('/all/dashboard', c.getAllDashboard);
+router.get('/all/cashbook', c.getAllCashbook);
 router.post('/members', c.addMember);                // add member
 router.get('/:gymId/members', c.getMembers);         // gym members
 router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail

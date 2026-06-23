@@ -93,6 +93,63 @@ exports.addMember = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// ===================== ALL BRANCHES (combined) =====================
+
+// @desc  All members across ALL of the owner's gyms (each tagged with its gym)
+exports.getAllMembers = async (req, res, next) => {
+  try {
+    const ids = await myGymIds(req.user);
+    const memberships = await Membership.find({ gym: { $in: ids } })
+      .populate('user', 'name phone email avatar')
+      .populate('gym', 'name')
+      .sort({ createdAt: -1 });
+    const now = new Date();
+    const data = memberships.map(m => ({
+      _id: m._id,
+      user: m.user,
+      gym: m.gym,            // { _id, name } — which branch
+      plan: m.plan,
+      fee: m.fee,
+      joinDate: m.joinDate,
+      dueDate: m.dueDate,
+      status: m.status,
+      isDue: m.dueDate ? new Date(m.dueDate) < now : false,
+    }));
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { next(e); }
+};
+
+// @desc  Combined dashboard across all branches
+exports.getAllDashboard = async (req, res, next) => {
+  try {
+    const ids = await myGymIds(req.user);
+    const now = new Date();
+    const day = istDay();
+    const [totalMembers, todayFootfall, dueList] = await Promise.all([
+      Membership.countDocuments({ gym: { $in: ids } }),
+      GymAttendance.countDocuments({ gym: { $in: ids }, day }),
+      Membership.find({ gym: { $in: ids }, dueDate: { $lt: now } }).select('fee'),
+    ]);
+    const pendingFees = dueList.reduce((s, m) => s + (m.fee || 0), 0);
+    res.json({ success: true, data: { totalMembers, todayFootfall, dueMembers: dueList.length, pendingFees, branches: ids.length } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Combined cashbook across all branches (for a month)
+exports.getAllCashbook = async (req, res, next) => {
+  try {
+    const ids = await myGymIds(req.user);
+    const { month } = req.query;
+    let start, end;
+    if (month) { start = new Date(`${month}-01T00:00:00`); end = new Date(start); end.setMonth(end.getMonth() + 1); }
+    else { start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0); end = new Date(start); end.setMonth(end.getMonth() + 1); }
+    const entries = await GymCashbook.find({ gym: { $in: ids }, date: { $gte: start, $lt: end } }).populate('gym', 'name').sort({ date: -1 });
+    const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+    const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+    res.json({ success: true, data: { entries, income, expense, balance: income - expense } });
+  } catch (e) { next(e); }
+};
+
 // @desc  Members of a gym (with user info + payment status)
 exports.getMembers = async (req, res, next) => {
   try {
