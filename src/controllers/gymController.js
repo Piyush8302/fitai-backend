@@ -528,24 +528,19 @@ exports.gymPublicPage = async (req, res) => {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
 
-    // If the device remembers a phone (cache) AND that person exists → one-tap.
-    // If cache missing/cleared → fall back to entering the number. Both work.
+    // If the device remembers a phone (cache) AND that person exists → check in
+    // DIRECTLY (no tap). If cache missing/cleared → fall back to entering number.
     const savedPhone = getCookie(req, 'gphone');
     if (savedPhone && req.query.new !== '1') {
       const user = await User.findOne({ phone: savedPhone });
       if (user) {
+        const r = await attendUser(gym, user);
         return res.send(PAGE_SHELL(`
-          <h1>🏋️ ${esc(gym.name)}</h1>
-          <p class="sub">Welcome back! One tap to check in.</p>
-          <div style="background:#151725;border:1px solid #363a5c;border-radius:12px;padding:14px;margin-bottom:6px">
-            <div style="font-size:17px;font-weight:700">${esc(user.name)}</div>
-            <div class="muted">📞 ${esc(user.phone)}</div>
+          <div class="ok"><div class="big">✅</div>
+            <h1>Welcome ${esc(user.name)}!</h1>
+            <p class="muted">${esc(gym.name)}<br/>${r.duplicate ? 'Already checked in today.' : 'Attendance marked. Have a great workout! 💪'}</p>
           </div>
-          <form method="POST" action="/g/${gym.gymCode}/submit">
-            <input type="hidden" name="phone" value="${esc(user.phone)}"/>
-            <button type="submit">✅ Check in as ${esc(user.name.split(' ')[0])}</button>
-          </form>
-          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter number</a>`));
+          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter a different number</a>`));
       }
     }
 
