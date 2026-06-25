@@ -530,20 +530,17 @@ exports.gymPublicPage = async (req, res) => {
       }
     }
 
-    // New / unknown — full form (name optional: existing members can use just phone)
+    // PRIMARY (works on every device incl. iPhone — no cookie needed):
+    // Step 1 = just phone. Existing member → instant check-in. New → asked name in step 2.
     res.send(PAGE_SHELL(`
       <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">${esc(gym.location || '')} — Register & check in</p>
+      <p class="sub">${esc(gym.location || '')} — Check in</p>
       <form method="POST" action="/g/${gym.gymCode}/submit">
         <label>Mobile Number</label>
-        <input name="phone" type="tel" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required/>
-        <label>Name <span style="color:#9092b0">(new members only)</span></label>
-        <input name="name" placeholder="e.g. Ramesh"/>
-        <label>Email <span style="color:#9092b0">(optional)</span></label>
-        <input name="email" type="email" placeholder="you@email.com"/>
-        <button type="submit">Register & Check-in</button>
+        <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
+        <button type="submit">Check In</button>
       </form>
-      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Bas mobile number daalo — naam/email ki zaroorat nahi.</p>`));
+      <p class="muted" style="text-align:center;margin-top:14px">Member ho ya naye — bas mobile number daalo. Naye member se agle step me naam puchenge.</p>`));
   } catch (e) { res.status(500).send('Error'); }
 };
 
@@ -576,18 +573,44 @@ async function doWebCheckIn(gymCode, name, phone, email) {
   }
 }
 
-// @desc  Handle the native form POST → returns an HTML result page (CSP-safe, no JS)
+// @desc  Handle the native form POST → HTML result (CSP-safe, no JS).
+//        Step 1: phone only. Existing member → check in. New member → ask name (step 2).
 exports.gymPublicSubmit = async (req, res) => {
   try {
-    const r = await doWebCheckIn(req.params.gymCode, req.body.name, req.body.phone, req.body.email);
-    if (r.error) {
-      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(req.params.gymCode)}">Try again</a></div>`));
-    }
-    // Remember this phone on the device → next scan = one-tap check-in
+    const gymCode = req.params.gymCode;
     const phone = String(req.body.phone || '').replace(/\D/g, '');
-    if (phone.length >= 10) {
-      res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
+    const name = (req.body.name || '').trim();
+    const email = req.body.email;
+
+    const gym = await Gym.findOne({ gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1></div>`));
+    if (phone.length < 10) {
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Valid 10-digit number daalo</h1><a class="btn" href="/g/${esc(gymCode)}">Try again</a></div>`));
     }
+
+    // New person & no name yet → step 2: ask name (phone carried in hidden field)
+    const existing = await User.findOne({ phone });
+    if (!existing && !name) {
+      return res.send(PAGE_SHELL(`
+        <h1>🏋️ ${esc(gym.name)}</h1>
+        <p class="sub">Naye member! Apna naam daalo 👋</p>
+        <form method="POST" action="/g/${gym.gymCode}/submit">
+          <input type="hidden" name="phone" value="${esc(phone)}"/>
+          <label>Your Name</label>
+          <input name="name" placeholder="e.g. Ramesh" required autofocus/>
+          <label>Email <span style="color:#9092b0">(optional)</span></label>
+          <input name="email" type="email" placeholder="you@email.com"/>
+          <button type="submit">Register & Check In</button>
+        </form>`));
+    }
+
+    // Existing member, OR new member who just gave their name → check in
+    const r = await doWebCheckIn(gymCode, name, phone, email);
+    if (r.error) {
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(gymCode)}">Try again</a></div>`));
+    }
+    // Bonus: remember phone on this device (works where the browser keeps cookies)
+    res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
     const sub = r.duplicate ? 'You were already checked in today.' : r.isNew ? 'Registered & attendance marked! Pay your fee at the counter.' : 'Attendance marked. Have a great workout!';
     res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(r.name)}!</h1><p class="muted">${esc(r.gym)}<br/>${sub}</p></div>`));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
