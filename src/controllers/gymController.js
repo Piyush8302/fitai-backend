@@ -558,7 +558,7 @@ exports.gymPublicPage = async (req, res) => {
         <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
         <button type="submit">Continue</button>
       </form>
-      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Bas number daalo → seedha check-in.<br/>New? Agle step me naam puchenge.</p>`));
+      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`));
   } catch (e) { res.status(500).send('Error'); }
 };
 
@@ -585,7 +585,7 @@ exports.gymPublicSubmit = async (req, res) => {
     // New person → ask only for name (email optional), phone carried hidden
     res.send(PAGE_SHELL(`
       <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">New here? Bas naam batao — phir check-in ho jayega.</p>
+      <p class="sub">New here? Just tell us your name to finish checking in.</p>
       <form method="POST" action="/g/${gym.gymCode}/register">
         <input type="hidden" name="phone" value="${esc(phone)}"/>
         <label>Your Name</label>
