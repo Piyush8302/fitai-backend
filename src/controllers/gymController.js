@@ -527,6 +527,29 @@ exports.gymPublicPage = async (req, res) => {
   try {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+
+    // If the device remembers a phone (cache) AND that person exists → one-tap.
+    // If cache missing/cleared → fall back to entering the number. Both work.
+    const savedPhone = getCookie(req, 'gphone');
+    if (savedPhone && req.query.new !== '1') {
+      const user = await User.findOne({ phone: savedPhone });
+      if (user) {
+        return res.send(PAGE_SHELL(`
+          <h1>🏋️ ${esc(gym.name)}</h1>
+          <p class="sub">Welcome back! One tap to check in.</p>
+          <div style="background:#151725;border:1px solid #363a5c;border-radius:12px;padding:14px;margin-bottom:6px">
+            <div style="font-size:17px;font-weight:700">${esc(user.name)}</div>
+            <div class="muted">📞 ${esc(user.phone)}</div>
+          </div>
+          <form method="POST" action="/g/${gym.gymCode}/submit">
+            <input type="hidden" name="phone" value="${esc(user.phone)}"/>
+            <button type="submit">✅ Check in as ${esc(user.name.split(' ')[0])}</button>
+          </form>
+          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter number</a>`));
+      }
+    }
+
+    // No cache → phone-first form
     res.send(PAGE_SHELL(`
       <h1>🏋️ ${esc(gym.name)}</h1>
       <p class="sub">${esc(gym.location || '')} — Enter your number to check in</p>
