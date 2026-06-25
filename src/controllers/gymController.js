@@ -188,7 +188,7 @@ exports.getMemberDetail = async (req, res, next) => {
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
     const [attendance, payments, thisMonth] = await Promise.all([
-      GymAttendance.find({ gym: membership.gym, user: membership.user._id }).sort({ checkInAt: -1 }).limit(60),
+      GymAttendance.find({ gym: membership.gym, user: membership.user._id }).sort({ checkInAt: -1 }).limit(366),
       GymPayment.find({ gym: membership.gym, user: membership.user._id }).sort({ paidDate: -1 }).limit(30),
       GymAttendance.countDocuments({ gym: membership.gym, user: membership.user._id, checkInAt: { $gte: monthStart } }),
     ]);
