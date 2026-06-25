@@ -7,8 +7,13 @@ exports.register = async (req, res, next) => {
   try {
     const { name, email, password, phone } = req.body;
 
+    // Friendly, specific validation (so users never see raw Mongoose errors)
+    if (!name || !name.trim()) return res.status(400).json({ success: false, message: 'Please enter your name' });
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
+    if (!password || password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+
     const exists = await User.findOne({ email });
-    if (exists) return res.status(400).json({ success: false, message: 'Email already registered' });
+    if (exists) return res.status(400).json({ success: false, message: 'This email is already registered. Please login instead.' });
 
     const user = await User.create({ name, email, password, phone });
     const token = user.getSignedToken();
