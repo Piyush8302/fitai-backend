@@ -60,7 +60,7 @@ exports.getMyGyms = async (req, res, next) => {
 // @desc  Add a member to a gym (find user by phone or create minimal)
 exports.addMember = async (req, res, next) => {
   try {
-    const { gymId, name, phone, plan = 'monthly', fee = 0 } = req.body;
+    const { gymId, name, phone, plan = 'monthly', fee = 0, avatar } = req.body;
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
@@ -72,7 +72,10 @@ exports.addMember = async (req, res, next) => {
         phone,
         email: `g_${phone}_${Date.now()}@fitai.local`, // placeholder, unique
         role: 'user',
+        avatar: avatar || '',
       });
+    } else if (avatar && !user.avatar) {
+      try { user.avatar = avatar; await user.save(); } catch (e) {}
     }
 
     // Existing membership?
@@ -486,7 +489,12 @@ exports.selfCheckIn = async (req, res, next) => {
 
 // ===================== PUBLIC (no app needed) =====================
 
-const PAGE_SHELL = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gym Check-in</title>
+const PAGE_SHELL = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>FitAI Gym Check-in</title>
+<link rel="manifest" href="/gym-manifest.json"/>
+<meta name="theme-color" content="#6C63FF"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-title" content="FitAI Gym"/>
 <style>*{box-sizing:border-box;font-family:-apple-system,Roboto,sans-serif}body{margin:0;background:#151725;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
 .card{background:#222438;border:1px solid #363a5c;border-radius:20px;padding:28px;max-width:380px;width:100%}
 h1{margin:0 0 4px;font-size:22px}.sub{color:#9092b0;margin:0 0 22px;font-size:14px}
@@ -494,7 +502,12 @@ label{font-size:12px;color:#c2c3da;display:block;margin:14px 0 6px}
 input{width:100%;padding:14px;border-radius:12px;border:1px solid #363a5c;background:#151725;color:#fff;font-size:16px}
 button{width:100%;margin-top:22px;padding:15px;border:0;border-radius:12px;background:#6C63FF;color:#fff;font-size:16px;font-weight:700}
 a.btn{display:block;text-align:center;text-decoration:none;margin-top:18px;padding:13px;border-radius:12px;background:#6C63FF;color:#fff;font-weight:700}
-.ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}</style></head><body><div class="card">${body}</div></body></html>`;
+.ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}
+#installBtn{display:none;margin-top:14px;background:#222438;border:1px solid #6C63FF;color:#8B85FF}</style></head><body>
+<div class="card">${body}
+<button id="installBtn" type="button">📲 Install this as an app</button>
+</div>
+<script src="/gym-app.js"></script></body></html>`;
 
 const esc = (s) => String(s || '').replace(/[<>"'&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '&': '&amp;' }[c]));
 const getCookie = (req, name) => {

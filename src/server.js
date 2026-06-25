@@ -59,6 +59,43 @@ app.get('/g/:gymCode', require('./controllers/gymController').gymPublicPage);
 app.post('/g/:gymCode/submit', require('./controllers/gymController').gymPublicSubmit);
 app.post('/g/:gymCode/register', require('./controllers/gymController').gymPublicRegister);
 
+// ===== PWA assets for the gym check-in page (installable web app) =====
+app.get('/gym-icon.svg', (req, res) => {
+  res.type('image/svg+xml').send(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" rx="96" fill="#6C63FF"/><text x="50%" y="54%" font-size="300" text-anchor="middle" dominant-baseline="middle">🏋️</text></svg>`
+  );
+});
+app.get('/gym-manifest.json', (req, res) => {
+  res.json({
+    name: 'FitAI Gym Check-in',
+    short_name: 'FitAI Gym',
+    description: 'Quick gym attendance check-in',
+    start_url: '.',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#151725',
+    theme_color: '#6C63FF',
+    icons: [
+      { src: '/gym-icon.svg', sizes: '192x192', type: 'image/svg+xml', purpose: 'any maskable' },
+      { src: '/gym-icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' },
+    ],
+  });
+});
+app.get('/gym-sw.js', (req, res) => {
+  res.type('application/javascript').send(
+    `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>self.clients.claim());self.addEventListener('fetch',e=>{});`
+  );
+});
+app.get('/gym-app.js', (req, res) => {
+  res.type('application/javascript').send(
+    `if('serviceWorker' in navigator){navigator.serviceWorker.register('/gym-sw.js').catch(function(){});}
+var dp=null,b=document.getElementById('installBtn');
+window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();dp=e;if(b)b.style.display='block';});
+if(b){b.addEventListener('click',function(){if(dp){dp.prompt();dp=null;b.style.display='none';}});}
+window.addEventListener('appinstalled',function(){if(b)b.style.display='none';});`
+  );
+});
+
 // Health check
 app.get('/', (req, res) => {
   res.json({
