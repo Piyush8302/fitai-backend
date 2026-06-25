@@ -57,6 +57,7 @@ app.use('/api/gym', require('./routes/gymRoutes'));
 // Public gym check-in page (opened by scanning the gym QR from any phone camera)
 app.get('/g/:gymCode', require('./controllers/gymController').gymPublicPage);
 app.post('/g/:gymCode/submit', require('./controllers/gymController').gymPublicSubmit);
+app.post('/g/:gymCode/register', require('./controllers/gymController').gymPublicRegister);
 
 // Health check
 app.get('/', (req, res) => {

@@ -502,80 +502,110 @@ const getCookie = (req, name) => {
   return m ? decodeURIComponent(m[1]) : null;
 };
 
-// @desc  Serve registration/check-in page (NATIVE form POST — CSP-safe, no JS)
-//        Returning members (phone remembered on device) get one-tap check-in.
-exports.gymPublicPage = async (req, res) => {
-  try {
-    const gym = await Gym.findOne({ gymCode: req.params.gymCode });
-    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+const okPage = (name, gymName, sub) =>
+  PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(name)}!</h1><p class="muted">${esc(gymName)}<br/>${sub}</p></div>`);
 
-    // Single form — name, mobile, email all together (existing members are
-    // recognised by phone, so they're never duplicated even if they re-fill).
-    res.send(PAGE_SHELL(`
-      <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">${esc(gym.location || '')} — Register & check in</p>
-      <form method="POST" action="/g/${gym.gymCode}/submit">
-        <label>Your Name</label>
-        <input name="name" placeholder="e.g. Ramesh" required autofocus/>
-        <label>Mobile Number</label>
-        <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required/>
-        <label>Email <span style="color:#9092b0">(optional)</span></label>
-        <input name="email" type="email" placeholder="you@email.com"/>
-        <button type="submit">Register & Check In</button>
-      </form>
-      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Bas same number daalo — duplicate nahi hoga.</p>`));
-  } catch (e) { res.status(500).send('Error'); }
-};
-
-// Shared core: register-by-phone + mark attendance. Returns a result object.
-async function doWebCheckIn(gymCode, name, phone, email) {
-  if (!phone || String(phone).replace(/\D/g, '').length < 10) return { error: 'Valid 10-digit phone required' };
-  const gym = await Gym.findOne({ gymCode });
-  if (!gym) return { error: 'Invalid gym QR' };
-
-  const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
-  let user = await User.findOne({ phone });
-  if (!user) {
-    user = await User.create({ name: name || 'Member', phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
-  } else if (cleanEmail && (!user.email || user.email.endsWith('@fitai.local'))) {
-    // fill a real email if we only had a placeholder
-    try { user.email = cleanEmail; await user.save(); } catch (e) { /* email taken, skip */ }
-  }
+// Existing user → ensure membership (trial) + mark today's attendance
+async function attendUser(gym, user) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
-  const isNew = !membership;
   if (!membership) {
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
   }
   const day = istDay();
   try {
     await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
-    return { ok: true, name: user.name, gym: gym.name, isNew, duplicate: false };
-  } catch (dupErr) {
-    if (dupErr.code === 11000) return { ok: true, name: user.name, gym: gym.name, isNew: false, duplicate: true };
-    throw dupErr;
+    return { duplicate: false };
+  } catch (e) {
+    if (e.code === 11000) return { duplicate: true };
+    throw e;
   }
 }
 
-// @desc  Handle the native form POST → HTML result (CSP-safe, no JS).
-//        Single step: name + phone + email together. Phone = identity (no duplicates).
+// @desc  STEP 1 — phone-only page. Registered members just enter their number;
+//        new people are asked for a name on step 2. No cookie needed (works on iPhone).
+exports.gymPublicPage = async (req, res) => {
+  try {
+    const gym = await Gym.findOne({ gymCode: req.params.gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
+    res.send(PAGE_SHELL(`
+      <h1>🏋️ ${esc(gym.name)}</h1>
+      <p class="sub">${esc(gym.location || '')} — Enter your number to check in</p>
+      <form method="POST" action="/g/${gym.gymCode}/submit">
+        <label>Mobile Number</label>
+        <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
+        <button type="submit">Continue</button>
+      </form>
+      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Bas number daalo → seedha check-in.<br/>New? Agle step me naam puchenge.</p>`));
+  } catch (e) { res.status(500).send('Error'); }
+};
+
+// @desc  STEP 2 — phone submitted. If registered → attendance done.
+//        If new → show a small "your name" form to finish registration.
 exports.gymPublicSubmit = async (req, res) => {
   try {
     const gymCode = req.params.gymCode;
-    const r = await doWebCheckIn(gymCode, req.body.name, req.body.phone, req.body.email);
-    if (r.error) {
-      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>${esc(r.error)}</h1><a class="btn" href="/g/${esc(gymCode)}">Try again</a></div>`));
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    const gym = await Gym.findOne({ gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1></div>`));
+    if (phone.length < 10) {
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Enter a valid 10-digit number</h1><a class="btn" href="/g/${esc(gymCode)}">Try again</a></div>`));
     }
-    const sub = r.duplicate ? 'You were already checked in today.' : r.isNew ? 'Registered & attendance marked! Pay your fee at the counter.' : 'Attendance marked. Have a great workout!';
-    res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(r.name)}!</h1><p class="muted">${esc(r.gym)}<br/>${sub}</p></div>`));
+
+    const user = await User.findOne({ phone });
+    if (user) {
+      // Registered already → just mark attendance (no name/email asked)
+      const r = await attendUser(gym, user);
+      res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
+      return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪'));
+    }
+
+    // New person → ask only for name (email optional), phone carried hidden
+    res.send(PAGE_SHELL(`
+      <h1>🏋️ ${esc(gym.name)}</h1>
+      <p class="sub">New here? Bas naam batao — phir check-in ho jayega.</p>
+      <form method="POST" action="/g/${gym.gymCode}/register">
+        <input type="hidden" name="phone" value="${esc(phone)}"/>
+        <label>Your Name</label>
+        <input name="name" placeholder="e.g. Ramesh" required autofocus/>
+        <label>Email <span style="color:#9092b0">(optional)</span></label>
+        <input name="email" type="email" placeholder="you@email.com"/>
+        <button type="submit">Register & Check In</button>
+      </form>`));
+  } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
+};
+
+// @desc  STEP 3 — new person submits name → create user + membership + attendance
+exports.gymPublicRegister = async (req, res) => {
+  try {
+    const gymCode = req.params.gymCode;
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    const name = (req.body.name || '').trim() || 'Member';
+    const email = req.body.email;
+    const gym = await Gym.findOne({ gymCode });
+    if (!gym || phone.length < 10) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Something went wrong</h1><a class="btn" href="/g/${esc(gymCode)}">Start again</a></div>`));
+
+    const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
+    let user = await User.findOne({ phone }); // double-check (race)
+    if (!user) {
+      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+    }
+    const r = await attendUser(gym, user);
+    res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
+    res.send(okPage(user.name, gym.name, r.duplicate ? 'Already checked in today.' : 'Registered & attendance marked! Pay your fee at the counter.'));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
 // @desc  Public JSON check-in (used by the app scanner) — no auth
 exports.webCheckIn = async (req, res, next) => {
   try {
-    const r = await doWebCheckIn(req.body.gymCode, req.body.name, req.body.phone);
-    if (r.error) return res.status(400).json({ success: false, message: r.error });
-    res.json({ success: true, message: `Welcome ${r.name}!`, gym: r.gym, duplicate: r.duplicate });
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    if (phone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
+    const gym = await Gym.findOne({ gymCode: req.body.gymCode });
+    if (!gym) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
+    let user = await User.findOne({ phone });
+    if (!user) user = await User.create({ name: req.body.name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+    const r = await attendUser(gym, user);
+    res.json({ success: true, message: `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate });
   } catch (e) { next(e); }
 };
 
