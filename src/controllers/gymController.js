@@ -3,10 +3,61 @@ const Membership = require('../models/Membership');
 const GymAttendance = require('../models/GymAttendance');
 const GymPayment = require('../models/GymPayment');
 const GymCashbook = require('../models/GymCashbook');
+const StaffAttendance = require('../models/StaffAttendance');
 const User = require('../models/User');
+const { notifyUsers } = require('../utils/push');
 
 // ---- helpers ----
 const istDay = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
+
+// Public base URL of this backend — used to build avatar image URLs for push.
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://fitai-backend-icbh.onrender.com';
+
+// Notify a gym's owner + all its staff (in-app + push). `excludeUserId` skips
+// the person who triggered the action (e.g. the staff who added the member).
+const notifyGymTeam = async (gymId, { title, body, type = 'info', data = {}, imageUrl, excludeUserId } = {}) => {
+  try {
+    const gym = await Gym.findById(gymId).select('owner');
+    if (!gym) return;
+    const [owner, staff] = await Promise.all([
+      User.findById(gym.owner).select('_id expoPushToken'),
+      User.find({ role: 'gym_staff', staffGym: gymId }).select('_id expoPushToken'),
+    ]);
+    let recipients = [owner, ...staff].filter(Boolean);
+    if (excludeUserId) recipients = recipients.filter(u => String(u._id) !== String(excludeUserId));
+    await notifyUsers(recipients, { title, body, type, data: { screen: 'GymAdmin', ...data }, imageUrl });
+  } catch (e) { console.log('notifyGymTeam error:', e.message); }
+};
+
+// Build the "new member joined" notification for a gym's team.
+// `member` = { id, name, phone, avatar }. The base64 avatar is carried in `data`
+// (for the in-app list) and also served as an image URL for the push thumbnail.
+const announceNewMember = (gymId, gymName, member = {}, excludeUserId) => {
+  const hasPhoto = member.avatar && String(member.avatar).startsWith('data:');
+  const imageUrl = hasPhoto && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined;
+  return notifyGymTeam(gymId, {
+    title: `🆕 New member at ${gymName || 'your gym'}`,
+    body: `${member.name || 'A new member'}${member.phone ? ` (${member.phone})` : ''} just joined. 🎉`,
+    type: 'success',
+    data: { kind: 'new_member', gym: gymName, memberName: member.name, avatar: member.avatar || undefined },
+    imageUrl,
+    excludeUserId,
+  });
+};
+
+// "Payment received" notification for a gym's team (with member's photo).
+const announcePayment = (gymId, gymName, member = {}, amount, planLabel, excludeUserId) => {
+  const hasPhoto = member.avatar && String(member.avatar).startsWith('data:');
+  const imageUrl = hasPhoto && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined;
+  return notifyGymTeam(gymId, {
+    title: `💵 Payment received — ${gymName || 'your gym'}`,
+    body: `${member.name || 'A member'} paid ₹${amount}${planLabel ? ` (${planLabel})` : ''}. ✅`,
+    type: 'success',
+    data: { kind: 'payment', gym: gymName, memberName: member.name, avatar: member.avatar || undefined, amount },
+    imageUrl,
+    excludeUserId,
+  });
+};
 
 const PLAN_MONTHS = { trial: 0, day_pass: 0, monthly: 1, quarterly: 3, half_yearly: 6, yearly: 12 };
 
@@ -30,13 +81,36 @@ const ownsGym = async (user, gymId) => {
   return ids.includes(String(gymId));
 };
 
+// @desc  Serve a user's avatar as a real image (so push thumbnails can use a URL).
+//        Public — Expo fetches it from the device with no auth header.
+exports.getAvatarImage = async (req, res) => {
+  try {
+    const u = await User.findById(req.params.userId).select('avatar');
+    const m = /^data:(image\/[\w+.-]+);base64,(.+)$/.exec(u?.avatar || '');
+    if (!m) return res.status(404).send('No image');
+    res.set('Content-Type', m[1]);
+    res.set('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(m[2], 'base64'));
+  } catch (e) { return res.status(500).send('error'); }
+};
+
 // ===================== OWNER / STAFF =====================
 
 // @desc  Create a gym (becomes a gym_owner)
 exports.createGym = async (req, res, next) => {
   try {
-    const { name, location, city, phone, lat, lng } = req.body;
+    const { name, location, city, phone, lat, lng, ownerPhone } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Gym name required' });
+
+    // A gym owner must have a mobile number on file. If they don't have one yet
+    // (e.g. signed up with email), require it while creating the gym.
+    if (!req.user.phone) {
+      const op = String(ownerPhone || '').replace(/\D/g, '');
+      if (op.length < 10) return res.status(400).json({ success: false, message: 'Owner mobile number is required' });
+      const taken = await User.findOne({ phone: op, _id: { $ne: req.user.id } });
+      if (taken) return res.status(400).json({ success: false, message: 'This mobile number is already in use' });
+      await User.findByIdAndUpdate(req.user.id, { phone: op });
+    }
 
     const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng });
 
@@ -92,7 +166,124 @@ exports.addMember = async (req, res, next) => {
       status: 'active',
       addedBy: req.user.id,
     });
+    // Notify owner + staff (skip whoever added the member)
+    const gym = await Gym.findById(gymId).select('name');
+    announceNewMember(gymId, gym?.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }, req.user.id);
     res.status(201).json({ success: true, data: membership });
+  } catch (e) { next(e); }
+};
+
+// ===================== STAFF =====================
+
+// @desc  Add a staff member to a gym. Find user by phone or create a new one.
+exports.addStaff = async (req, res, next) => {
+  try {
+    const { gymId, name, phone, staffRole, salary, avatar } = req.body;
+    if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const cleanPhone = String(phone).replace(/\D/g, '');
+    if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
+
+    let user = await User.findOne({ phone: cleanPhone });
+    if (!user) {
+      user = await User.create({
+        name: name || 'Staff', phone: cleanPhone,
+        email: `s_${cleanPhone}_${Date.now()}@fitai.local`,
+        role: 'gym_staff', staffGym: gymId, staffRole, staffSalary: salary,
+        staffJoinDate: new Date(), avatar: avatar || '',
+      });
+    } else {
+      // Don't hijack an owner/admin account
+      if (['admin', 'gym_owner'].includes(user.role)) {
+        return res.status(400).json({ success: false, message: 'This number belongs to an owner/admin account' });
+      }
+      user.role = 'gym_staff';
+      user.staffGym = gymId;
+      if (name) user.name = name;
+      if (staffRole !== undefined) user.staffRole = staffRole;
+      if (salary !== undefined) user.staffSalary = salary;
+      if (avatar && !user.avatar) user.avatar = avatar;
+      if (!user.staffJoinDate) user.staffJoinDate = new Date();
+      await user.save();
+    }
+    res.status(201).json({
+      success: true,
+      data: { _id: user._id, name: user.name, phone: user.phone, staffRole: user.staffRole, staffSalary: user.staffSalary, avatar: user.avatar },
+    });
+  } catch (e) { next(e); }
+};
+
+// @desc  List a gym's staff + today's presence + this-month attendance count
+exports.getStaff = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
+      .select('name phone avatar staffRole staffSalary staffJoinDate').sort({ createdAt: -1 });
+    const day = istDay();
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+
+    const data = await Promise.all(staff.map(async (s) => {
+      const [todayRec, monthCount] = await Promise.all([
+        StaffAttendance.findOne({ staff: s._id, gym: gymId, day }),
+        StaffAttendance.countDocuments({ staff: s._id, gym: gymId, checkInAt: { $gte: monthStart } }),
+      ]);
+      return {
+        _id: s._id, name: s.name, phone: s.phone, avatar: s.avatar,
+        staffRole: s.staffRole, staffSalary: s.staffSalary, staffJoinDate: s.staffJoinDate,
+        presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
+      };
+    }));
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { next(e); }
+};
+
+// @desc  Remove a staff member (revert account to a normal user)
+exports.removeStaff = async (req, res, next) => {
+  try {
+    const { staffId } = req.params;
+    const staff = await User.findById(staffId);
+    if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    staff.role = 'user';
+    staff.staffGym = undefined;
+    staff.staffRole = undefined;
+    staff.staffSalary = undefined;
+    await staff.save();
+    res.json({ success: true, message: 'Staff removed' });
+  } catch (e) { next(e); }
+};
+
+// @desc  Mark a staff member present at the reception (dedupe per day)
+exports.markStaffAttendance = async (req, res, next) => {
+  try {
+    const { gymId, staffId } = req.body;
+    if (!gymId || !staffId) return res.status(400).json({ success: false, message: 'gymId and staffId required' });
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const staff = await User.findOne({ _id: staffId, role: 'gym_staff', staffGym: gymId }).select('name');
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found in this gym' });
+
+    const day = istDay();
+    try {
+      const att = await StaffAttendance.create({ staff: staffId, gym: gymId, day, method: 'reception', markedBy: req.user.id });
+      return res.status(201).json({ success: true, message: 'Staff marked present', data: { att, staff: { name: staff.name } } });
+    } catch (dupErr) {
+      if (dupErr.code === 11000) return res.json({ success: true, message: 'Already marked present today', data: { duplicate: true, staff: { name: staff.name } } });
+      throw dupErr;
+    }
+  } catch (e) { next(e); }
+};
+
+// @desc  A staff member's attendance history (this-month count + recent list)
+exports.getStaffAttendance = async (req, res, next) => {
+  try {
+    const { gymId, staffId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const list = await StaffAttendance.find({ gym: gymId, staff: staffId }).sort({ checkInAt: -1 }).limit(200);
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const thisMonth = list.filter(a => new Date(a.checkInAt) >= monthStart).length;
+    res.json({ success: true, count: list.length, thisMonth, data: list });
   } catch (e) { next(e); }
 };
 
@@ -235,6 +426,7 @@ exports.markPayment = async (req, res, next) => {
       amount, plan: plan || membership.plan, periodMonths: months, markedBy: req.user.id,
     });
 
+    const finalPlan = plan || membership.plan;
     membership.lastPaidDate = new Date();
     membership.dueDate = addMonths(new Date(), months);
     membership.status = 'active';
@@ -242,14 +434,21 @@ exports.markPayment = async (req, res, next) => {
     if (amount) membership.fee = amount;
     await membership.save();
 
+    // Member + gym info (for the cashbook entry and the team notification)
+    const [member, gym] = await Promise.all([
+      User.findById(membership.user).select('name phone avatar'),
+      Gym.findById(membership.gym).select('name'),
+    ]);
+
     // Auto-add this payment to the cashbook as income (so owner doesn't re-enter)
     if (amount > 0) {
-      const member = await User.findById(membership.user).select('name');
       await GymCashbook.create({
         gym: membership.gym, type: 'income', amount,
         description: `Membership: ${member?.name || 'Member'}`,
         source: 'membership', payment: payment._id, createdBy: req.user.id,
       });
+      // Notify owner + staff (skip whoever recorded the payment) with the member's photo
+      announcePayment(membership.gym, gym?.name, { id: membership.user, name: member?.name, phone: member?.phone, avatar: member?.avatar }, amount, finalPlan, req.user.id);
     }
 
     res.status(201).json({ success: true, data: { payment, membership } });
@@ -270,6 +469,11 @@ exports.markAttendance = async (req, res, next) => {
         user: userId, gym: gymId, plan: 'trial', fee: 0,
         joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active', addedBy: req.user.id,
       });
+      const [gym, nu] = await Promise.all([
+        Gym.findById(gymId).select('name'),
+        User.findById(userId).select('name phone avatar'),
+      ]);
+      announceNewMember(gymId, gym?.name, { id: userId, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, req.user.id);
     }
 
     const day = istDay();
@@ -473,6 +677,7 @@ exports.selfCheckIn = async (req, res, next) => {
         user: req.user.id, gym: gym._id, plan: 'trial', fee: 0,
         joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
       });
+      announceNewMember(gym._id, gym.name, { id: req.user.id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
     }
     const day = istDay();
     try {
@@ -489,8 +694,8 @@ exports.selfCheckIn = async (req, res, next) => {
 
 // ===================== PUBLIC (no app needed) =====================
 
-const PAGE_SHELL = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>FitAI Gym Check-in</title>
-<link rel="manifest" href="/gym-manifest.json"/>
+const PAGE_SHELL = (body, gymCode) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>FitAI Gym Check-in</title>
+<link rel="manifest" href="${gymCode ? `/g/${String(gymCode).replace(/[^A-Za-z0-9]/g, '')}/manifest.json` : '/gym-manifest.json'}"/>
 <meta name="theme-color" content="#6C63FF"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -515,14 +720,59 @@ const getCookie = (req, name) => {
   return m ? decodeURIComponent(m[1]) : null;
 };
 
-const okPage = (name, gymName, sub) =>
-  PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(name)}!</h1><p class="muted">${esc(gymName)}<br/>${sub}</p></div>`);
+const okPage = (name, gymName, sub, gymCode, extra = '') =>
+  PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(name)}!</h1><p class="muted">${esc(gymName)}<br/>${sub}</p></div>${extra}`, gymCode);
+
+// Build a small "my recent attendance" block (this-month count + recent check-ins)
+async function attendanceHtml(gym, user) {
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const [list, monthCount] = await Promise.all([
+    GymAttendance.find({ gym: gym._id, user: user._id }).sort({ checkInAt: -1 }).limit(20),
+    GymAttendance.countDocuments({ gym: gym._id, user: user._id, checkInAt: { $gte: monthStart } }),
+  ]);
+  if (!list.length) return '';
+  const rows = list.map(a => {
+    const d = new Date(a.checkInAt);
+    return `<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #2c2f4a">
+      <span style="color:#fff;font-size:13px">✅ ${d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+      <span style="color:#9092b0;font-size:12px">${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
+    </div>`;
+  }).join('');
+  return `<div style="margin-top:22px;text-align:left">
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <div style="flex:1;background:#151725;border:1px solid #363a5c;border-radius:12px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:700;color:#8B85FF">${monthCount}</div><div style="font-size:11px;color:#9092b0">this month</div></div>
+      <div style="flex:1;background:#151725;border:1px solid #363a5c;border-radius:12px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:700;color:#8B85FF">${list.length}</div><div style="font-size:11px;color:#9092b0">recent check-ins</div></div>
+    </div>
+    <div style="font-size:12px;color:#c2c3da;margin-bottom:2px">📅 My attendance</div>
+    ${rows}
+  </div>`;
+}
+
+// @desc  Per-gym PWA manifest — start_url opens the gym's check-in page (not the API root)
+exports.gymManifest = (req, res) => {
+  const code = String(req.params.gymCode || '').replace(/[^A-Za-z0-9]/g, '');
+  res.json({
+    name: 'FitAI Gym Check-in',
+    short_name: 'Gym Check-in',
+    description: 'Check in & view your gym attendance',
+    start_url: `/g/${code}`,
+    scope: '/',
+    display: 'standalone',
+    background_color: '#151725',
+    theme_color: '#6C63FF',
+    icons: [
+      { src: '/gym-icon.svg', sizes: '192x192', type: 'image/svg+xml', purpose: 'any maskable' },
+      { src: '/gym-icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' },
+    ],
+  });
+};
 
 // Existing user → ensure membership (trial) + mark today's attendance
 async function attendUser(gym, user) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
   if (!membership) {
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
+    announceNewMember(gym._id, gym.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
   }
   const day = istDay();
   try {
@@ -548,12 +798,14 @@ exports.gymPublicPage = async (req, res) => {
       const user = await User.findOne({ phone: savedPhone });
       if (user) {
         const r = await attendUser(gym, user);
+        const hist = await attendanceHtml(gym, user);
         return res.send(PAGE_SHELL(`
           <div class="ok"><div class="big">✅</div>
             <h1>Welcome ${esc(user.name)}!</h1>
             <p class="muted">${esc(gym.name)}<br/>${r.duplicate ? 'Already checked in today.' : 'Attendance marked. Have a great workout! 💪'}</p>
           </div>
-          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter a different number</a>`));
+          ${hist}
+          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter a different number</a>`, gym.gymCode));
       }
     }
 
@@ -566,7 +818,7 @@ exports.gymPublicPage = async (req, res) => {
         <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
         <button type="submit">Continue</button>
       </form>
-      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`));
+      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode));
   } catch (e) { res.status(500).send('Error'); }
 };
 
@@ -586,22 +838,51 @@ exports.gymPublicSubmit = async (req, res) => {
     if (user) {
       // Registered already → just mark attendance (no name/email asked)
       const r = await attendUser(gym, user);
+      const hist = await attendanceHtml(gym, user);
       res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-      return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪'));
+      return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
     }
 
-    // New person → ask only for name (email optional), phone carried hidden
+    // New person → ask for name + photo (email optional), phone carried hidden
     res.send(PAGE_SHELL(`
       <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">New here? Just tell us your name to finish checking in.</p>
-      <form method="POST" action="/g/${gym.gymCode}/register">
+      <p class="sub">New here? Add your photo & name to finish checking in.</p>
+      <form method="POST" action="/g/${gym.gymCode}/register" id="regForm">
         <input type="hidden" name="phone" value="${esc(phone)}"/>
+        <input type="hidden" name="avatar" id="avatar"/>
+        <label>Your Photo <span style="color:#9092b0">(optional)</span></label>
+        <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
+          <img id="preview" alt="" style="width:64px;height:64px;border-radius:32px;object-fit:cover;background:#151725;border:1px solid #363a5c;display:none"/>
+          <label for="photo" style="flex:1;margin:0;text-align:center;padding:13px;border-radius:12px;background:#222438;border:1px solid #6C63FF;color:#8B85FF;font-weight:700">📷 Add Photo</label>
+        </div>
+        <input type="file" id="photo" accept="image/*" capture="user" style="display:none"/>
         <label>Your Name</label>
-        <input name="name" placeholder="e.g. Ramesh" required autofocus/>
+        <input name="name" placeholder="e.g. Ramesh" required/>
         <label>Email <span style="color:#9092b0">(optional)</span></label>
         <input name="email" type="email" placeholder="you@email.com"/>
         <button type="submit">Register & Check In</button>
-      </form>`));
+      </form>
+      <script>
+      (function(){
+        var inp=document.getElementById('photo'),av=document.getElementById('avatar'),pv=document.getElementById('preview');
+        inp.addEventListener('change',function(){
+          var f=inp.files&&inp.files[0];if(!f)return;
+          var r=new FileReader();
+          r.onload=function(e){
+            var img=new Image();
+            img.onload=function(){
+              var max=400,scale=Math.min(max/img.width,max/img.height,1),c=document.createElement('canvas');
+              c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
+              c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+              var data=c.toDataURL('image/jpeg',0.5);
+              av.value=data;pv.src=data;pv.style.display='block';
+            };
+            img.src=e.target.result;
+          };
+          r.readAsDataURL(f);
+        });
+      })();
+      </script>`, gym.gymCode));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
@@ -616,13 +897,17 @@ exports.gymPublicRegister = async (req, res) => {
     if (!gym || phone.length < 10) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Something went wrong</h1><a class="btn" href="/g/${esc(gymCode)}">Start again</a></div>`));
 
     const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
+    const avatar = (typeof req.body.avatar === 'string' && req.body.avatar.startsWith('data:image/')) ? req.body.avatar : '';
     let user = await User.findOne({ phone }); // double-check (race)
     if (!user) {
-      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user', avatar });
+    } else if (avatar && !user.avatar) {
+      try { user.avatar = avatar; await user.save(); } catch (e) {}
     }
     const r = await attendUser(gym, user);
+    const hist = await attendanceHtml(gym, user);
     res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-    res.send(okPage(user.name, gym.name, r.duplicate ? 'Already checked in today.' : 'Registered & attendance marked! Pay your fee at the counter.'));
+    res.send(okPage(user.name, gym.name, r.duplicate ? 'Already checked in today.' : 'Registered & attendance marked! Pay your fee at the counter.', gym.gymCode, hist));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 

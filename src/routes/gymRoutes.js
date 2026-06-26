@@ -3,8 +3,9 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const c = require('../controllers/gymController');
 
-// ---- PUBLIC (no login) — walk-in web check-in ----
+// ---- PUBLIC (no login) — walk-in web check-in + avatar image (push thumbnails) ----
 router.post('/public/checkin', c.webCheckIn);
+router.get('/avatar/:userId', c.getAvatarImage);
 
 // All gym routes below require login
 router.use(protect);
@@ -17,6 +18,14 @@ router.get('/all/members', c.getAllMembers);
 router.get('/all/dashboard', c.getAllDashboard);
 router.get('/all/cashbook', c.getAllCashbook);
 router.post('/members', c.addMember);                // add member
+
+// ---- Staff (declare specific paths before /:gymId/* so they aren't shadowed) ----
+router.post('/staff', c.addStaff);                   // add staff
+router.post('/staff/attendance', c.markStaffAttendance); // mark staff present (reception)
+router.delete('/staff/:staffId', c.removeStaff);     // remove staff
+router.get('/:gymId/staff', c.getStaff);             // gym staff + today presence
+router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff history
+
 router.get('/:gymId/members', c.getMembers);         // gym members
 router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail
 router.post('/payment', c.markPayment);              // mark cash payment

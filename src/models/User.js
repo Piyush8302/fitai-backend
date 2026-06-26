@@ -58,6 +58,9 @@ const userSchema = new mongoose.Schema({
   role: { type: String, enum: ['user', 'admin', 'gym_owner', 'gym_staff'], default: 'user' },
   // For gym_staff: which gym they work at (set by the owner)
   staffGym: { type: mongoose.Schema.Types.ObjectId, ref: 'Gym' },
+  staffRole: { type: String, trim: true },   // e.g. 'Receptionist', 'Trainer'
+  staffSalary: { type: Number },             // monthly salary (optional)
+  staffJoinDate: { type: Date },             // when added as staff
 }, { timestamps: true });
 
 // Hash password

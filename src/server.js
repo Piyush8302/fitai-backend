@@ -23,7 +23,7 @@ app.set('trust proxy', 1);
 app.use(cors());
 app.use(helmet());
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan('dev'));
 
 // Rate limiting
@@ -56,6 +56,7 @@ app.use('/api/notifications', require('./routes/notificationsRoutes'));
 app.use('/api/gym', require('./routes/gymRoutes'));
 // Public gym check-in page (opened by scanning the gym QR from any phone camera)
 app.get('/g/:gymCode', require('./controllers/gymController').gymPublicPage);
+app.get('/g/:gymCode/manifest.json', require('./controllers/gymController').gymManifest);
 app.post('/g/:gymCode/submit', require('./controllers/gymController').gymPublicSubmit);
 app.post('/g/:gymCode/register', require('./controllers/gymController').gymPublicRegister);
 
