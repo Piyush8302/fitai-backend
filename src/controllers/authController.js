@@ -2,6 +2,62 @@ const User = require('../models/User');
 const { sendOtpEmail, sendLoginOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { sendOtpSms } = require('../utils/smsService');
 
+// @desc    Register as a gym owner — creates a PENDING request (super-admin approves in panel)
+exports.registerOwner = async (req, res, next) => {
+  try {
+    const { name, email, phone, gymName } = req.body;
+    const cleanPhone = String(phone || '').replace(/\D/g, '');
+    const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
+    if (!name || cleanPhone.length < 10 || !gymName) {
+      return res.status(400).json({ success: false, message: 'Name, valid phone and gym name are required' });
+    }
+    if (!cleanEmail) return res.status(400).json({ success: false, message: 'A valid email is required (approval OTP is sent there)' });
+
+    let user = await User.findOne({ phone: cleanPhone });
+    if (user) {
+      if (['gym_owner', 'gym_staff', 'admin'].includes(user.role) || user.ownerStatus === 'approved') {
+        return res.status(400).json({ success: false, message: 'This number is already a gym account. Just log in.' });
+      }
+      if (user.ownerStatus === 'pending') {
+        return res.json({ success: true, pending: true, message: 'Your request is already pending approval.' });
+      }
+      // Email must be unique
+      const emailTaken = await User.findOne({ email: cleanEmail, _id: { $ne: user._id } });
+      if (emailTaken) return res.status(400).json({ success: false, message: 'This email is already in use' });
+      user.name = name;
+      user.email = cleanEmail;
+      user.requestedGymName = gymName.trim();
+      user.ownerStatus = 'pending';
+      user.ownerRequestedAt = new Date();
+      await user.save();
+    } else {
+      const emailTaken = await User.findOne({ email: cleanEmail });
+      if (emailTaken) return res.status(400).json({ success: false, message: 'This email is already in use' });
+      user = await User.create({
+        name, phone: cleanPhone, email: cleanEmail, role: 'user',
+        ownerStatus: 'pending', requestedGymName: gymName.trim(), ownerRequestedAt: new Date(),
+      });
+    }
+    res.status(201).json({ success: true, pending: true, message: 'Registration submitted! You will be notified by email once approved.' });
+  } catch (e) { next(e); }
+};
+
+// @desc    Check if a phone is an approved gym owner/staff (admin-login gating)
+exports.ownerStatus = async (req, res, next) => {
+  try {
+    const cleanPhone = String(req.body.phone || req.query.phone || '').replace(/\D/g, '');
+    if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
+    const user = await User.findOne({ phone: cleanPhone }).select('role ownerStatus');
+    let status = 'none';
+    if (user) {
+      if (['gym_owner', 'gym_staff', 'admin'].includes(user.role) || user.ownerStatus === 'approved') status = 'approved';
+      else if (user.ownerStatus === 'pending') status = 'pending';
+      else if (user.ownerStatus === 'rejected') status = 'rejected';
+    }
+    res.json({ success: true, status });
+  } catch (e) { next(e); }
+};
+
 // @desc    Register user
 exports.register = async (req, res, next) => {
   try {
@@ -122,7 +178,7 @@ exports.verifyOtp = async (req, res, next) => {
     await user.save();
 
     const token = user.getSignedToken();
-    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete } });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete, role: user.role } });
   } catch (error) {
     next(error);
   }

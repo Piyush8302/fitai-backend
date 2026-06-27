@@ -4,6 +4,61 @@ const Workout = require('../models/Workout');
 const DietPlan = require('../models/DietPlan');
 const Subscription = require('../models/Subscription');
 const Tracking = require('../models/Tracking');
+const Gym = require('../models/Gym');
+const { sendLoginOtpEmail } = require('../utils/emailService');
+
+// ===== GYM OWNER APPROVAL =====
+
+// @desc  List gym-owner registration requests (default: pending)
+exports.getOwnerRequests = async (req, res, next) => {
+  try {
+    const status = req.query.status || 'pending';
+    const filter = status === 'all' ? { ownerStatus: { $in: ['pending', 'approved', 'rejected'] } } : { ownerStatus: status };
+    const requests = await User.find(filter)
+      .select('name email phone requestedGymName ownerStatus ownerRequestedAt role')
+      .sort({ ownerRequestedAt: -1 });
+    res.json({ success: true, count: requests.length, data: requests });
+  } catch (e) { next(e); }
+};
+
+// @desc  Approve a gym-owner request → promote to gym_owner, create their gym, email a login OTP
+exports.approveOwnerRequest = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.ownerStatus !== 'pending') return res.status(400).json({ success: false, message: `Request is already ${user.ownerStatus}` });
+
+    user.role = 'gym_owner';
+    user.ownerStatus = 'approved';
+
+    // Create their first gym from the requested name (if they have none yet)
+    let gym = await Gym.findOne({ owner: user._id });
+    if (!gym && user.requestedGymName) {
+      gym = await Gym.create({ name: user.requestedGymName, owner: user._id, phone: user.phone });
+    }
+
+    // Email a login OTP so they can sign in right away ("sab clear")
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    await user.save();
+    try { await sendLoginOtpEmail(user.email, otp); } catch (e) { console.log('approval email failed:', e.message); }
+
+    res.json({ success: true, message: 'Approved — login OTP emailed to the owner', data: { id: user._id, gym: gym?._id } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Reject a gym-owner request
+exports.rejectOwnerRequest = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    user.ownerStatus = 'rejected';
+    user.requestedGymName = undefined;
+    await user.save();
+    res.json({ success: true, message: 'Request rejected' });
+  } catch (e) { next(e); }
+};
 
 // @desc    Dashboard stats
 exports.getDashboard = async (req, res, next) => {

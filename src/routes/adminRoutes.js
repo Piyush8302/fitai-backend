@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions, approvePayment, rejectPayment } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest } = require('../controllers/adminController');
 const { protect, admin } = require('../middleware/auth');
 
 /**
@@ -112,5 +112,10 @@ router.put('/users/:id/deactivate', protect, admin, deactivateUser);
 router.get('/subscriptions', protect, admin, getSubscriptions);
 router.put('/subscriptions/:id/approve', protect, admin, approvePayment);
 router.put('/subscriptions/:id/reject', protect, admin, rejectPayment);
+
+// Gym-owner approval workflow
+router.get('/owner-requests', protect, admin, getOwnerRequests);
+router.put('/owner-requests/:userId/approve', protect, admin, approveOwnerRequest);
+router.put('/owner-requests/:userId/reject', protect, admin, rejectOwnerRequest);
 
 module.exports = router;

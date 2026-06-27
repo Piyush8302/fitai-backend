@@ -35,6 +35,14 @@ exports.admin = (req, res, next) => {
   }
 };
 
+// Gym owner (or super admin) only — blocks gym_staff from owner-only actions
+exports.ownerOnly = (req, res, next) => {
+  if (req.user && req.user.role === 'gym_staff') {
+    return res.status(403).json({ success: false, message: 'Only the gym owner can do this' });
+  }
+  next();
+};
+
 // Premium only
 exports.premium = (req, res, next) => {
   if (req.user && (req.user.isPremium || req.user.role === 'admin')) {

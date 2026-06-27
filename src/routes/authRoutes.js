@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, sendOtp, verifyOtp, googleLogin, googleMobileAuth, googleCallback, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin, requestEmailChange, verifyEmailChange, requestPhoneChange, verifyPhoneChange, uploadAvatar } = require('../controllers/authController');
+const { register, login, sendOtp, verifyOtp, googleLogin, googleMobileAuth, googleCallback, getMe, updateProfile, changePassword, forgotPassword, resetPassword, deleteAccount, seedAdmin, requestEmailChange, verifyEmailChange, requestPhoneChange, verifyPhoneChange, uploadAvatar, registerOwner, ownerStatus } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -33,6 +33,8 @@ const { protect } = require('../middleware/auth');
  *       400: { description: Email already exists }
  */
 router.post('/register', register);
+router.post('/register-owner', registerOwner);   // gym-owner request (pending approval)
+router.post('/owner-status', ownerStatus);        // admin-login gating check
 
 /**
  * @swagger

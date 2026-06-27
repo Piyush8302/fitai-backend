@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/auth');
+const { protect, ownerOnly } = require('../middleware/auth');
 const c = require('../controllers/gymController');
 
 // ---- PUBLIC (no login) — walk-in web check-in + avatar image (push thumbnails) ----
@@ -11,18 +11,18 @@ router.get('/avatar/:userId', c.getAvatarImage);
 router.use(protect);
 
 // ---- Owner / Staff ----
-router.post('/', c.createGym);                       // create gym
+router.post('/', ownerOnly, c.createGym);            // create gym (owner only)
 router.get('/mine', c.getMyGyms);                    // my gyms
 // All-branches combined (must be BEFORE /:gymId/* so "all" isn't read as a gymId)
 router.get('/all/members', c.getAllMembers);
 router.get('/all/dashboard', c.getAllDashboard);
-router.get('/all/cashbook', c.getAllCashbook);
+router.get('/all/cashbook', ownerOnly, c.getAllCashbook);
 router.post('/members', c.addMember);                // add member
 
-// ---- Staff (declare specific paths before /:gymId/* so they aren't shadowed) ----
-router.post('/staff', c.addStaff);                   // add staff
-router.post('/staff/attendance', c.markStaffAttendance); // mark staff present (reception)
-router.delete('/staff/:staffId', c.removeStaff);     // remove staff
+// ---- Staff management (owner only) ----
+router.post('/staff', ownerOnly, c.addStaff);                   // add staff
+router.post('/staff/attendance', c.markStaffAttendance);        // mark staff present (reception)
+router.delete('/staff/:staffId', ownerOnly, c.removeStaff);     // remove staff
 router.get('/:gymId/staff', c.getStaff);             // gym staff + today presence
 router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff history
 
@@ -31,13 +31,15 @@ router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member de
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
+router.get('/:gymId/checkin-token', c.getCheckinToken); // fresh time-limited wall-QR token
+router.get('/:gymId/kiosk-link', c.getKioskLink);    // long-lived counter-display link
 router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 
-// ---- Cashbook & reports ----
-router.post('/cashbook', c.addCashEntry);
-router.get('/:gymId/cashbook', c.getCashbook);
-router.delete('/cashbook/:id', c.deleteCashEntry);
-router.get('/:gymId/report', c.getMonthlyReport);
+// ---- Cashbook & reports (owner only — staff has no financial access) ----
+router.post('/cashbook', ownerOnly, c.addCashEntry);
+router.get('/:gymId/cashbook', ownerOnly, c.getCashbook);
+router.delete('/cashbook/:id', ownerOnly, c.deleteCashEntry);
+router.get('/:gymId/report', ownerOnly, c.getMonthlyReport);
 
 // ---- Member ----
 router.get('/my/card', c.getMyCard);                 // membership card + gyms

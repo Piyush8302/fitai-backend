@@ -56,6 +56,10 @@ const userSchema = new mongoose.Schema({
   pendingPhone: { type: String },
 
   role: { type: String, enum: ['user', 'admin', 'gym_owner', 'gym_staff'], default: 'user' },
+  // Gym-owner approval workflow (super-admin approves in the admin panel)
+  ownerStatus: { type: String, enum: ['none', 'pending', 'approved', 'rejected'], default: 'none' },
+  requestedGymName: { type: String, trim: true },
+  ownerRequestedAt: { type: Date },
   // For gym_staff: which gym they work at (set by the owner)
   staffGym: { type: mongoose.Schema.Types.ObjectId, ref: 'Gym' },
   staffRole: { type: String, trim: true },   // e.g. 'Receptionist', 'Trainer'

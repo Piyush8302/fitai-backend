@@ -55,6 +55,9 @@ app.use('/api/achievements', require('./routes/achievementsRoutes'));
 app.use('/api/notifications', require('./routes/notificationsRoutes'));
 app.use('/api/gym', require('./routes/gymRoutes'));
 // Public gym check-in page (opened by scanning the gym QR from any phone camera)
+app.get('/g/kiosk/:token/qr', require('./controllers/gymController').gymKioskQr);   // auto-refreshing QR image
+app.get('/g/kiosk/:token', require('./controllers/gymController').gymKioskPage);    // counter display page
+app.get('/g/t/:token', require('./controllers/gymController').gymTokenPage); // LIVE scan (expiring, encrypted) — marks attendance
 app.get('/g/:gymCode', require('./controllers/gymController').gymPublicPage);
 app.get('/g/:gymCode/manifest.json', require('./controllers/gymController').gymManifest);
 app.post('/g/:gymCode/submit', require('./controllers/gymController').gymPublicSubmit);

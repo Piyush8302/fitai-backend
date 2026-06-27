@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+const QRCode = require('qrcode');
 const Gym = require('../models/Gym');
 const Membership = require('../models/Membership');
 const GymAttendance = require('../models/GymAttendance');
@@ -102,6 +104,12 @@ exports.createGym = async (req, res, next) => {
     const { name, location, city, phone, lat, lng, ownerPhone } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Gym name required' });
 
+    // Only an APPROVED gym owner (or super admin) can create gyms — no direct
+    // self-promotion. New owners must register and be approved in the admin panel.
+    if (!['gym_owner', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Please register as a gym owner and get approved first.' });
+    }
+
     // A gym owner must have a mobile number on file. If they don't have one yet
     // (e.g. signed up with email), require it while creating the gym.
     if (!req.user.phone) {
@@ -113,11 +121,6 @@ exports.createGym = async (req, res, next) => {
     }
 
     const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng });
-
-    // Promote the creator to gym_owner (unless super admin)
-    if (req.user.role === 'user') {
-      await User.findByIdAndUpdate(req.user.id, { role: 'gym_owner' });
-    }
     res.status(201).json({ success: true, data: gym });
   } catch (e) { next(e); }
 };
@@ -666,7 +669,14 @@ exports.getMyAttendance = async (req, res, next) => {
 // @desc  Member self check-in by scanning a gym's QR (gymCode)
 exports.selfCheckIn = async (req, res, next) => {
   try {
-    const { gymCode } = req.body;
+    let { gymCode, token } = req.body;
+    // Live encrypted QR token (preferred) → decrypt + enforce ~4-min expiry
+    if (token) {
+      const t = readCheckinToken(token);
+      if (t.expired) return res.status(400).json({ success: false, message: 'QR expired — scan the live counter QR again' });
+      if (t.invalid || !t.gymCode) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
+      gymCode = t.gymCode;
+    }
     const gym = await Gym.findOne({ gymCode });
     if (!gym) return res.status(404).json({ success: false, message: 'Invalid gym QR' });
 
@@ -767,6 +777,100 @@ exports.gymManifest = (req, res) => {
   });
 };
 
+// ===== TIME-LIMITED ENCRYPTED CHECK-IN TOKEN =====
+// The wall QR encodes an AES-encrypted token (gymCode + expiry). It is valid for
+// ~4 minutes, so a saved link can't be reused later / from home.
+const QR_KEY = crypto.createHash('sha256').update(process.env.QR_SECRET || process.env.JWT_SECRET || 'fitai-gym-qr-secret').digest();
+const CHECKIN_TTL_MS = 4 * 60 * 1000;            // live check-in QR — 4 min
+const KIOSK_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // counter display link — 30 days
+
+// type: 'c' = check-in (short), 'k' = kiosk display (long)
+function mintToken(gymCode, type, ttlMs) {
+  const payload = `${gymCode}|${type}|${Date.now() + ttlMs}`;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', QR_KEY, iv);
+  const enc = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), enc]).toString('base64url');
+}
+function readToken(token, expectedType) {
+  try {
+    const buf = Buffer.from(String(token || ''), 'base64url');
+    if (buf.length < 29) return { invalid: true };
+    const iv = buf.subarray(0, 12), tag = buf.subarray(12, 28), enc = buf.subarray(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', QR_KEY, iv);
+    decipher.setAuthTag(tag);
+    const txt = Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+    const [gymCode, type, exp] = txt.split('|');
+    if (!gymCode || !type || !exp) return { invalid: true };
+    if (expectedType && type !== expectedType) return { invalid: true };
+    if (Date.now() > Number(exp)) return { expired: true };
+    return { gymCode };
+  } catch (e) { return { invalid: true }; }
+}
+const mintCheckinToken = (gymCode) => mintToken(gymCode, 'c', CHECKIN_TTL_MS);
+const readCheckinToken = (token) => readToken(token, 'c');
+const mintKioskToken = (gymCode) => mintToken(gymCode, 'k', KIOSK_TTL_MS);
+const readKioskToken = (token) => readToken(token, 'k');
+
+const expiredPage = () => PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>QR expired</h1><p class="muted">This check-in QR has expired. Please scan the live QR shown at the gym counter again.</p></div>`);
+
+// Phone-entry form (used after a valid live scan, for people without a saved phone)
+const phoneFormPage = (gym) => PAGE_SHELL(`
+  <h1>🏋️ ${esc(gym.name)}</h1>
+  <p class="sub">${esc(gym.location || '')} — Enter your number to check in</p>
+  <form method="POST" action="/g/${gym.gymCode}/submit">
+    <label>Mobile Number</label>
+    <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
+    <button type="submit">Continue</button>
+  </form>
+  <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode);
+
+// New-person form (name + photo). No `capture` attr → user can pick camera OR gallery.
+const newPersonFormPage = (gym, phone) => PAGE_SHELL(`
+  <h1>🏋️ ${esc(gym.name)}</h1>
+  <p class="sub">New here? Add your photo & name to finish checking in.</p>
+  <form method="POST" action="/g/${gym.gymCode}/register" id="regForm">
+    <input type="hidden" name="phone" value="${esc(phone)}"/>
+    <input type="hidden" name="avatar" id="avatar"/>
+    <label>Your Photo <span style="color:#9092b0">(optional)</span></label>
+    <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
+      <img id="preview" alt="" style="width:64px;height:64px;border-radius:32px;object-fit:cover;background:#151725;border:1px solid #363a5c;display:none"/>
+      <label for="photo" style="flex:1;margin:0;text-align:center;padding:13px;border-radius:12px;background:#222438;border:1px solid #6C63FF;color:#8B85FF;font-weight:700">📷 Add Photo</label>
+    </div>
+    <input type="file" id="photo" accept="image/*" style="display:none"/>
+    <label>Your Name</label>
+    <input name="name" placeholder="e.g. Ramesh" required/>
+    <label>Email <span style="color:#9092b0">(optional)</span></label>
+    <input name="email" type="email" placeholder="you@email.com"/>
+    <button type="submit">Register &amp; Check In</button>
+  </form>
+  <script>
+  (function(){
+    var inp=document.getElementById('photo'),av=document.getElementById('avatar'),pv=document.getElementById('preview'),lbl=document.querySelector('label[for=photo]');
+    inp.addEventListener('change',function(){
+      var f=inp.files&&inp.files[0];if(!f){return;}
+      if(lbl){lbl.textContent='⏳ Processing…';}
+      var r=new FileReader();
+      r.onload=function(e){
+        var img=new Image();
+        img.onload=function(){
+          try{
+            var max=400,scale=Math.min(max/img.width,max/img.height,1),c=document.createElement('canvas');
+            c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
+            c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+            av.value=c.toDataURL('image/jpeg',0.5);
+          }catch(err){av.value=e.target.result;} // fallback to raw data URI
+          pv.src=av.value;pv.style.display='block';
+          if(lbl){lbl.textContent='✅ Photo added — tap to change';}
+        };
+        img.onerror=function(){av.value=e.target.result;pv.src=av.value;pv.style.display='block';if(lbl){lbl.textContent='✅ Photo added';}};
+        img.src=e.target.result;
+      };
+      r.readAsDataURL(f);
+    });
+  })();
+  </script>`, gym.gymCode);
+
 // Existing user → ensure membership (trial) + mark today's attendance
 async function attendUser(gym, user) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
@@ -791,35 +895,121 @@ exports.gymPublicPage = async (req, res) => {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
 
-    // If the device remembers a phone (cache) AND that person exists → check in
-    // DIRECTLY (no tap). If cache missing/cleared → fall back to entering number.
+    // This page is the installed-app home / a directly-opened link. It does NOT
+    // mark attendance — that only happens by scanning the LIVE counter QR (/g/t/:token),
+    // which expires in ~4 min so a saved link can't be reused from home.
+    const savedPhone = getCookie(req, 'gphone');
+    if (savedPhone) {
+      const user = await User.findOne({ phone: savedPhone });
+      if (user) {
+        const hist = await attendanceHtml(gym, user);
+        return res.send(PAGE_SHELL(`
+          <div class="ok"><div class="big">🏋️</div>
+            <h1>Hi ${esc(user.name)}!</h1>
+            <p class="muted">${esc(gym.name)}</p>
+            <div style="margin-top:14px;padding:14px;border-radius:12px;background:#6C63FF18;border:1px solid #6C63FF55;color:#c2c3da;font-size:13px;line-height:1.5">📷 To mark today's attendance, scan the live QR shown at the gym counter.</div>
+          </div>
+          ${hist}`, gym.gymCode));
+      }
+    }
+    // Unknown device → just guide them to scan the counter QR
+    res.send(PAGE_SHELL(`
+      <div class="ok"><div class="big">🏋️</div>
+        <h1>${esc(gym.name)}</h1>
+        <p class="muted">${esc(gym.location || '')}</p>
+        <div style="margin-top:14px;padding:14px;border-radius:12px;background:#6C63FF18;border:1px solid #6C63FF55;color:#c2c3da;font-size:13px;line-height:1.5">📷 Scan the live QR shown at the gym counter to check in.</div>
+      </div>`, gym.gymCode));
+  } catch (e) { res.status(500).send('Error'); }
+};
+
+// @desc  LIVE scan — opened by scanning the rotating counter QR (encrypted, ~4 min).
+//        This is the ONLY entry that marks attendance.
+exports.gymTokenPage = async (req, res) => {
+  try {
+    const r = readCheckinToken(req.params.token);
+    if (r.expired) return res.send(expiredPage());
+    if (r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">Please scan the QR at the gym counter.</p></div>`));
+    const gym = await Gym.findOne({ gymCode: r.gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1></div>`));
+
     const savedPhone = getCookie(req, 'gphone');
     if (savedPhone && req.query.new !== '1') {
       const user = await User.findOne({ phone: savedPhone });
       if (user) {
-        const r = await attendUser(gym, user);
+        const rr = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(PAGE_SHELL(`
-          <div class="ok"><div class="big">✅</div>
-            <h1>Welcome ${esc(user.name)}!</h1>
-            <p class="muted">${esc(gym.name)}<br/>${r.duplicate ? 'Already checked in today.' : 'Attendance marked. Have a great workout! 💪'}</p>
-          </div>
-          ${hist}
-          <a class="btn" style="background:#222438;border:1px solid #363a5c" href="/g/${gym.gymCode}?new=1">Not you? Enter a different number</a>`, gym.gymCode));
+        return res.send(okPage(user.name, gym.name, rr.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
       }
     }
-
-    // No cache → phone-first form
-    res.send(PAGE_SHELL(`
-      <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">${esc(gym.location || '')} — Enter your number to check in</p>
-      <form method="POST" action="/g/${gym.gymCode}/submit">
-        <label>Mobile Number</label>
-        <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
-        <button type="submit">Continue</button>
-      </form>
-      <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode));
+    // No saved phone → enter number (then /submit checks in)
+    res.send(phoneFormPage(gym));
   } catch (e) { res.status(500).send('Error'); }
+};
+
+// @desc  Owner mints a fresh time-limited check-in token for the wall QR
+exports.getCheckinToken = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const gym = await Gym.findById(gymId).select('gymCode');
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    const token = mintCheckinToken(gym.gymCode);
+    res.json({ success: true, data: { url: `${PUBLIC_BASE_URL}/g/t/${token}`, expiresInSec: CHECKIN_TTL_MS / 1000 } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Owner gets a long-lived "counter display" link. Open it once on a screen/
+//        tablet at the counter — it auto-refreshes the live QR by itself.
+exports.getKioskLink = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const gym = await Gym.findById(gymId).select('gymCode');
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    res.json({ success: true, data: { url: `${PUBLIC_BASE_URL}/g/kiosk/${mintKioskToken(gym.gymCode)}` } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Kiosk QR image — mints a FRESH 4-min check-in token each call, returns SVG
+exports.gymKioskQr = async (req, res) => {
+  try {
+    const r = readKioskToken(req.params.token);
+    if (r.expired || r.invalid || !r.gymCode) return res.status(410).send('expired');
+    const svg = await QRCode.toString(`${PUBLIC_BASE_URL}/g/t/${mintCheckinToken(r.gymCode)}`, {
+      type: 'svg', margin: 1, width: 340, color: { dark: '#000000', light: '#FFFFFF' },
+    });
+    res.set('Content-Type', 'image/svg+xml');
+    res.set('Cache-Control', 'no-store');
+    res.send(svg);
+  } catch (e) { res.status(500).send('error'); }
+};
+
+// @desc  Kiosk display page — full-screen auto-refreshing QR for the counter
+exports.gymKioskPage = async (req, res) => {
+  try {
+    const tk = req.params.token;
+    const r = readKioskToken(tk);
+    if (r.expired || r.invalid || !r.gymCode) {
+      return res.send(`<!doctype html><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><body style="background:#151725;color:#fff;font-family:sans-serif;text-align:center;padding:40px"><h1>⌛ Display link expired</h1><p style="color:#9092b0">Open a fresh counter display link from the FitAI app.</p></body>`);
+    }
+    const gym = await Gym.findOne({ gymCode: r.gymCode }).select('name');
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${esc(gym?.name || 'Gym')} — Check-in</title>
+<style>*{box-sizing:border-box;font-family:-apple-system,Roboto,sans-serif}html,body{height:100%}body{margin:0;background:#151725;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+h1{margin:0 0 6px;font-size:30px;text-align:center}.sub{color:#9092b0;margin:0 0 24px;font-size:16px}
+.qrwrap{background:#fff;border-radius:24px;padding:22px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+.qrwrap img{display:block;width:min(72vw,360px);height:auto}
+.hint{margin-top:24px;color:#c2c3da;font-size:18px;text-align:center;max-width:480px;line-height:1.5}</style></head><body>
+<h1>📷 ${esc(gym?.name || 'Gym')}</h1>
+<p class="sub">Scan with your phone camera to check in</p>
+<div class="qrwrap"><img id="qr" alt="Check-in QR" src="/g/kiosk/${tk}/qr?ts=${Date.now()}"/></div>
+<div class="hint">This QR refreshes automatically. Keep this screen on at the counter.</div>
+<script>
+var tk=${JSON.stringify(tk)};
+function refresh(){document.getElementById('qr').src='/g/kiosk/'+tk+'/qr?ts='+Date.now();}
+setInterval(refresh,180000);
+try{if('wakeLock' in navigator){var wl=function(){navigator.wakeLock.request('screen').catch(function(){});};wl();document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')wl();});}}catch(e){}
+</script></body></html>`);
+  } catch (e) { res.status(500).send('error'); }
 };
 
 // @desc  STEP 2 — phone submitted. If registered → attendance done.
@@ -844,45 +1034,7 @@ exports.gymPublicSubmit = async (req, res) => {
     }
 
     // New person → ask for name + photo (email optional), phone carried hidden
-    res.send(PAGE_SHELL(`
-      <h1>🏋️ ${esc(gym.name)}</h1>
-      <p class="sub">New here? Add your photo & name to finish checking in.</p>
-      <form method="POST" action="/g/${gym.gymCode}/register" id="regForm">
-        <input type="hidden" name="phone" value="${esc(phone)}"/>
-        <input type="hidden" name="avatar" id="avatar"/>
-        <label>Your Photo <span style="color:#9092b0">(optional)</span></label>
-        <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
-          <img id="preview" alt="" style="width:64px;height:64px;border-radius:32px;object-fit:cover;background:#151725;border:1px solid #363a5c;display:none"/>
-          <label for="photo" style="flex:1;margin:0;text-align:center;padding:13px;border-radius:12px;background:#222438;border:1px solid #6C63FF;color:#8B85FF;font-weight:700">📷 Add Photo</label>
-        </div>
-        <input type="file" id="photo" accept="image/*" capture="user" style="display:none"/>
-        <label>Your Name</label>
-        <input name="name" placeholder="e.g. Ramesh" required/>
-        <label>Email <span style="color:#9092b0">(optional)</span></label>
-        <input name="email" type="email" placeholder="you@email.com"/>
-        <button type="submit">Register & Check In</button>
-      </form>
-      <script>
-      (function(){
-        var inp=document.getElementById('photo'),av=document.getElementById('avatar'),pv=document.getElementById('preview');
-        inp.addEventListener('change',function(){
-          var f=inp.files&&inp.files[0];if(!f)return;
-          var r=new FileReader();
-          r.onload=function(e){
-            var img=new Image();
-            img.onload=function(){
-              var max=400,scale=Math.min(max/img.width,max/img.height,1),c=document.createElement('canvas');
-              c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
-              c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-              var data=c.toDataURL('image/jpeg',0.5);
-              av.value=data;pv.src=data;pv.style.display='block';
-            };
-            img.src=e.target.result;
-          };
-          r.readAsDataURL(f);
-        });
-      })();
-      </script>`, gym.gymCode));
+    res.send(newPersonFormPage(gym, phone));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
