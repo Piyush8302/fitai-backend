@@ -54,14 +54,18 @@ app.use('/api/favorites', require('./routes/favoritesRoutes'));
 app.use('/api/achievements', require('./routes/achievementsRoutes'));
 app.use('/api/notifications', require('./routes/notificationsRoutes'));
 app.use('/api/gym', require('./routes/gymRoutes'));
-// Public gym check-in page (opened by scanning the gym QR from any phone camera)
-app.get('/g/kiosk/:token/qr', require('./controllers/gymController').gymKioskQr);   // auto-refreshing QR image
-app.get('/g/kiosk/:token', require('./controllers/gymController').gymKioskPage);    // counter display page
-app.get('/g/t/:token', require('./controllers/gymController').gymTokenPage); // LIVE scan (expiring, encrypted) — marks attendance
-app.get('/g/:gymCode', require('./controllers/gymController').gymPublicPage);
-app.get('/g/:gymCode/manifest.json', require('./controllers/gymController').gymManifest);
-app.post('/g/:gymCode/submit', require('./controllers/gymController').gymPublicSubmit);
-app.post('/g/:gymCode/register', require('./controllers/gymController').gymPublicRegister);
+// Public gym check-in page (static QR, scanned by any phone camera)
+const gymC = require('./controllers/gymController');
+app.get('/g/setloc/:token', gymC.gymSetlocPage);     // owner sets gym GPS location
+app.post('/g/setloc/:token', gymC.gymSetlocSave);
+app.get('/g/kiosk/:token/qr', gymC.gymKioskQr);      // (legacy) auto-refreshing QR image
+app.get('/g/kiosk/:token', gymC.gymKioskPage);       // (legacy) counter display page
+app.get('/g/t/:token', gymC.gymTokenPage);           // (legacy) expiring-token scan
+app.get('/g/:gymCode', gymC.gymPublicPage);          // static QR → geofenced check-in
+app.get('/g/:gymCode/manifest.json', gymC.gymManifest);
+app.post('/g/:gymCode/checkin', gymC.gymGeoCheckin); // receives GPS, validates distance
+app.post('/g/:gymCode/submit', gymC.gymPublicSubmit);
+app.post('/g/:gymCode/register', gymC.gymPublicRegister);
 
 // ===== PWA assets for the gym check-in page (installable web app) =====
 app.get('/gym-icon.svg', (req, res) => {

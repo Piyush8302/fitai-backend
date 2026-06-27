@@ -811,14 +811,63 @@ const mintCheckinToken = (gymCode) => mintToken(gymCode, 'c', CHECKIN_TTL_MS);
 const readCheckinToken = (token) => readToken(token, 'c');
 const mintKioskToken = (gymCode) => mintToken(gymCode, 'k', KIOSK_TTL_MS);
 const readKioskToken = (token) => readToken(token, 'k');
+const SETLOC_TTL_MS = 20 * 60 * 1000; // owner has 20 min to set the gym location
+const mintSetlocToken = (gymCode) => mintToken(gymCode, 'l', SETLOC_TTL_MS);
+const readSetlocToken = (token) => readToken(token, 'l');
+
+// ===== GEOFENCE (static QR + GPS check so people can't check in from home) =====
+const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M) || 200;
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+// ok=true if the gym has no fence set yet, OR the member is within the radius
+function checkGeofence(gym, lat, lng) {
+  if (gym.lat == null || gym.lng == null) return { ok: true, noFence: true };
+  const la = parseFloat(lat), ln = parseFloat(lng);
+  if (isNaN(la) || isNaN(ln)) return { ok: false, noCoords: true };
+  const d = distanceMeters(la, ln, gym.lat, gym.lng);
+  return { ok: d <= GEOFENCE_RADIUS_M, distance: Math.round(d) };
+}
+
+// A page that grabs the browser's GPS once, then auto-submits it to `postUrl`.
+// Browsers remember the location permission per site, so it isn't asked every time.
+const geoLoaderPage = (gym, postUrl, heading, sub) => PAGE_SHELL(`
+  <div class="ok"><div class="big">📍</div>
+    <h1>${esc(heading || gym.name)}</h1>
+    <p class="muted" id="msg">${esc(sub || 'Getting your location…')}</p>
+  </div>
+  <form id="geoForm" method="POST" action="${postUrl}" style="display:none">
+    <input type="hidden" name="lat" id="lat"/><input type="hidden" name="lng" id="lng"/>
+  </form>
+  <div id="retry" style="display:none;margin-top:18px"><a class="btn" id="retryA" href="">Retry</a></div>
+  <script>
+  (function(){
+    var msg=document.getElementById('msg');
+    function fail(t){msg.textContent=t;var r=document.getElementById('retry');document.getElementById('retryA').href=location.href;r.style.display='block';}
+    if(!navigator.geolocation){fail('Location not supported on this device.');return;}
+    navigator.geolocation.getCurrentPosition(function(p){
+      document.getElementById('lat').value=p.coords.latitude;
+      document.getElementById('lng').value=p.coords.longitude;
+      msg.textContent='Please wait…';
+      document.getElementById('geoForm').submit();
+    },function(){fail('📍 Please allow location access, then tap Retry.');},{enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+  })();
+  </script>`, gym.gymCode);
 
 const expiredPage = () => PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>QR expired</h1><p class="muted">This check-in QR has expired. Please scan the live QR shown at the gym counter again.</p></div>`);
 
-// Phone-entry form (used after a valid live scan, for people without a saved phone)
-const phoneFormPage = (gym) => PAGE_SHELL(`
+// Hidden lat/lng inputs to carry the verified location through the next POST
+const geoInputs = (lat, lng) => `<input type="hidden" name="lat" value="${lat != null ? esc(lat) : ''}"/><input type="hidden" name="lng" value="${lng != null ? esc(lng) : ''}"/>`;
+
+// Phone-entry form (used after a valid geofenced scan, for people without a saved phone)
+const phoneFormPage = (gym, lat, lng) => PAGE_SHELL(`
   <h1>🏋️ ${esc(gym.name)}</h1>
   <p class="sub">${esc(gym.location || '')} — Enter your number to check in</p>
   <form method="POST" action="/g/${gym.gymCode}/submit">
+    ${geoInputs(lat, lng)}
     <label>Mobile Number</label>
     <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
     <button type="submit">Continue</button>
@@ -826,11 +875,12 @@ const phoneFormPage = (gym) => PAGE_SHELL(`
   <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode);
 
 // New-person form (name + photo). No `capture` attr → user can pick camera OR gallery.
-const newPersonFormPage = (gym, phone) => PAGE_SHELL(`
+const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
   <h1>🏋️ ${esc(gym.name)}</h1>
   <p class="sub">New here? Add your photo & name to finish checking in.</p>
   <form method="POST" action="/g/${gym.gymCode}/register" id="regForm">
     <input type="hidden" name="phone" value="${esc(phone)}"/>
+    ${geoInputs(lat, lng)}
     <input type="hidden" name="avatar" id="avatar"/>
     <label>Your Photo <span style="color:#9092b0">(optional)</span></label>
     <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
@@ -895,31 +945,67 @@ exports.gymPublicPage = async (req, res) => {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">This gym QR is not valid.</p></div>`));
 
-    // This page is the installed-app home / a directly-opened link. It does NOT
-    // mark attendance — that only happens by scanning the LIVE counter QR (/g/t/:token),
-    // which expires in ~4 min so a saved link can't be reused from home.
+    // Static QR → grab the member's GPS once, then verify they're at the gym
+    res.send(geoLoaderPage(gym, `/g/${gym.gymCode}/checkin`, gym.name, "Verifying you're at the gym…"));
+  } catch (e) { res.status(500).send('Error'); }
+};
+
+// @desc  Geofenced check-in — receives the scanner's GPS, validates distance,
+//        then marks attendance (saved phone) or asks for the number.
+exports.gymGeoCheckin = async (req, res) => {
+  try {
+    const gym = await Gym.findOne({ gymCode: req.params.gymCode });
+    if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1></div>`));
+    const { lat, lng } = req.body;
+    const geo = checkGeofence(gym, lat, lng);
+    if (!geo.ok) {
+      const sub = geo.noCoords
+        ? 'Could not read your location. Enable GPS and try again.'
+        : `You're about ${geo.distance}m from ${esc(gym.name)}. Come to the gym to check in.`;
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">🚫</div><h1>Too far to check in</h1><p class="muted">${sub}</p><a class="btn" href="/g/${gym.gymCode}">Retry</a></div>`, gym.gymCode));
+    }
     const savedPhone = getCookie(req, 'gphone');
     if (savedPhone) {
       const user = await User.findOne({ phone: savedPhone });
       if (user) {
+        const r = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(PAGE_SHELL(`
-          <div class="ok"><div class="big">🏋️</div>
-            <h1>Hi ${esc(user.name)}!</h1>
-            <p class="muted">${esc(gym.name)}</p>
-            <div style="margin-top:14px;padding:14px;border-radius:12px;background:#6C63FF18;border:1px solid #6C63FF55;color:#c2c3da;font-size:13px;line-height:1.5">📷 To mark today's attendance, scan the live QR shown at the gym counter.</div>
-          </div>
-          ${hist}`, gym.gymCode));
+        return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
       }
     }
-    // Unknown device → just guide them to scan the counter QR
-    res.send(PAGE_SHELL(`
-      <div class="ok"><div class="big">🏋️</div>
-        <h1>${esc(gym.name)}</h1>
-        <p class="muted">${esc(gym.location || '')}</p>
-        <div style="margin-top:14px;padding:14px;border-radius:12px;background:#6C63FF18;border:1px solid #6C63FF55;color:#c2c3da;font-size:13px;line-height:1.5">📷 Scan the live QR shown at the gym counter to check in.</div>
-      </div>`, gym.gymCode));
+    // No saved phone → ask for number (carry verified lat/lng forward)
+    res.send(phoneFormPage(gym, lat, lng));
   } catch (e) { res.status(500).send('Error'); }
+};
+
+// @desc  Owner gets a one-time link to set the gym's GPS location (opened at the gym)
+exports.getSetlocLink = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const gym = await Gym.findById(gymId).select('gymCode lat lng');
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    res.json({ success: true, data: { url: `${PUBLIC_BASE_URL}/g/setloc/${mintSetlocToken(gym.gymCode)}`, hasLocation: gym.lat != null && gym.lng != null } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Set-location capture page (grabs the owner's GPS while standing at the gym)
+exports.gymSetlocPage = async (req, res) => {
+  const r = readSetlocToken(req.params.token);
+  if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1><p class="muted">Open a fresh "Set gym location" link from the app.</p></div>`));
+  const gym = await Gym.findOne({ gymCode: r.gymCode }).select('name gymCode');
+  if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid</h1></div>`));
+  res.send(geoLoaderPage(gym, `/g/setloc/${req.params.token}`, 'Set gym location', `Stand inside ${gym.name} and allow location…`));
+};
+
+// @desc  Save the captured gym location
+exports.gymSetlocSave = async (req, res) => {
+  const r = readSetlocToken(req.params.token);
+  if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1></div>`));
+  const lat = parseFloat(req.body.lat), lng = parseFloat(req.body.lng);
+  if (isNaN(lat) || isNaN(lng)) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>No location</h1><a class="btn" href="/g/setloc/${req.params.token}">Retry</a></div>`));
+  await Gym.findOneAndUpdate({ gymCode: r.gymCode }, { lat, lng });
+  res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Location saved!</h1><p class="muted">Members can now check in only when they're at the gym (within ${GEOFENCE_RADIUS_M}m).</p></div>`));
 };
 
 // @desc  LIVE scan — opened by scanning the rotating counter QR (encrypted, ~4 min).
@@ -1024,6 +1110,13 @@ exports.gymPublicSubmit = async (req, res) => {
       return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Enter a valid 10-digit number</h1><a class="btn" href="/g/${esc(gymCode)}">Try again</a></div>`));
     }
 
+    // Re-check geofence so a number can't be POSTed straight from home
+    const { lat, lng } = req.body;
+    const geo = checkGeofence(gym, lat, lng);
+    if (!geo.ok) {
+      return res.send(PAGE_SHELL(`<div class="ok"><div class="big">🚫</div><h1>Too far to check in</h1><p class="muted">Please check in from the gym.</p><a class="btn" href="/g/${gym.gymCode}">Retry</a></div>`, gym.gymCode));
+    }
+
     const user = await User.findOne({ phone });
     if (user) {
       // Registered already → just mark attendance (no name/email asked)
@@ -1033,8 +1126,8 @@ exports.gymPublicSubmit = async (req, res) => {
       return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
     }
 
-    // New person → ask for name + photo (email optional), phone carried hidden
-    res.send(newPersonFormPage(gym, phone));
+    // New person → ask for name + photo (email optional), phone + location carried hidden
+    res.send(newPersonFormPage(gym, phone, lat, lng));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
@@ -1047,6 +1140,10 @@ exports.gymPublicRegister = async (req, res) => {
     const email = req.body.email;
     const gym = await Gym.findOne({ gymCode });
     if (!gym || phone.length < 10) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Something went wrong</h1><a class="btn" href="/g/${esc(gymCode)}">Start again</a></div>`));
+
+    // Re-check geofence (location carried from the scan)
+    const geo = checkGeofence(gym, req.body.lat, req.body.lng);
+    if (!geo.ok) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">🚫</div><h1>Too far to check in</h1><p class="muted">Please check in from the gym.</p><a class="btn" href="/g/${gym.gymCode}">Retry</a></div>`, gym.gymCode));
 
     const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
     const avatar = (typeof req.body.avatar === 'string' && req.body.avatar.startsWith('data:image/')) ? req.body.avatar : '';
