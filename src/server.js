@@ -21,7 +21,10 @@ app.set('trust proxy', 1);
 
 // Middleware
 app.use(cors());
-app.use(helmet());
+// CSP disabled: the public /g/ check-in pages use inline scripts (photo capture,
+// GPS geofence) and data: image previews, which helmet's default CSP would block.
+// The rest of the API is JSON, so CSP isn't needed here.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan('dev'));

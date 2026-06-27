@@ -874,7 +874,8 @@ const phoneFormPage = (gym, lat, lng) => PAGE_SHELL(`
   </form>
   <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode);
 
-// New-person form (name + photo). No `capture` attr → user can pick camera OR gallery.
+// New-person form (name + photo). Separate Camera & Gallery buttons so both work
+// across browsers (capture="environment" forces the camera).
 const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
   <h1>🏋️ ${esc(gym.name)}</h1>
   <p class="sub">New here? Add your photo & name to finish checking in.</p>
@@ -883,11 +884,14 @@ const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
     ${geoInputs(lat, lng)}
     <input type="hidden" name="avatar" id="avatar"/>
     <label>Your Photo <span style="color:#9092b0">(optional)</span></label>
-    <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
-      <img id="preview" alt="" style="width:64px;height:64px;border-radius:32px;object-fit:cover;background:#151725;border:1px solid #363a5c;display:none"/>
-      <label for="photo" style="flex:1;margin:0;text-align:center;padding:13px;border-radius:12px;background:#222438;border:1px solid #6C63FF;color:#8B85FF;font-weight:700">📷 Add Photo</label>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+      <img id="preview" alt="" style="width:60px;height:60px;border-radius:30px;object-fit:cover;background:#151725;border:1px solid #363a5c;display:none"/>
+      <label for="camIn" style="flex:1;margin:0;text-align:center;padding:12px;border-radius:12px;background:#222438;border:1px solid #6C63FF;color:#8B85FF;font-weight:700">📷 Camera</label>
+      <label for="galIn" style="flex:1;margin:0;text-align:center;padding:12px;border-radius:12px;background:#222438;border:1px solid #363a5c;color:#c2c3da;font-weight:700">🖼 Gallery</label>
     </div>
-    <input type="file" id="photo" accept="image/*" style="display:none"/>
+    <input type="file" id="camIn" accept="image/*" capture="environment" style="display:none"/>
+    <input type="file" id="galIn" accept="image/*" style="display:none"/>
+    <div id="pstatus" style="font-size:12px;color:#9092b0;margin-top:6px"></div>
     <label>Your Name</label>
     <input name="name" placeholder="e.g. Ramesh" required/>
     <label>Email <span style="color:#9092b0">(optional)</span></label>
@@ -896,28 +900,33 @@ const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
   </form>
   <script>
   (function(){
-    var inp=document.getElementById('photo'),av=document.getElementById('avatar'),pv=document.getElementById('preview'),lbl=document.querySelector('label[for=photo]');
-    inp.addEventListener('change',function(){
-      var f=inp.files&&inp.files[0];if(!f){return;}
-      if(lbl){lbl.textContent='⏳ Processing…';}
-      var r=new FileReader();
-      r.onload=function(e){
-        var img=new Image();
-        img.onload=function(){
-          try{
-            var max=400,scale=Math.min(max/img.width,max/img.height,1),c=document.createElement('canvas');
-            c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
-            c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-            av.value=c.toDataURL('image/jpeg',0.5);
-          }catch(err){av.value=e.target.result;} // fallback to raw data URI
-          pv.src=av.value;pv.style.display='block';
-          if(lbl){lbl.textContent='✅ Photo added — tap to change';}
+    var av=document.getElementById('avatar'),pv=document.getElementById('preview'),st=document.getElementById('pstatus');
+    function handle(inp){
+      inp.addEventListener('change',function(){
+        var f=inp.files&&inp.files[0];if(!f){return;}
+        st.textContent='⏳ Processing photo…';
+        var r=new FileReader();
+        r.onload=function(e){
+          var img=new Image();
+          img.onload=function(){
+            var data;
+            try{
+              var max=360,scale=Math.min(max/img.width,max/img.height,1),c=document.createElement('canvas');
+              c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));
+              c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+              data=c.toDataURL('image/jpeg',0.5);
+            }catch(err){data=e.target.result;}
+            av.value=data;pv.src=data;pv.style.display='block';st.textContent='✅ Photo added';
+          };
+          img.onerror=function(){av.value=e.target.result;pv.src=e.target.result;pv.style.display='block';st.textContent='✅ Photo added';};
+          img.src=e.target.result;
         };
-        img.onerror=function(){av.value=e.target.result;pv.src=av.value;pv.style.display='block';if(lbl){lbl.textContent='✅ Photo added';}};
-        img.src=e.target.result;
-      };
-      r.readAsDataURL(f);
-    });
+        r.onerror=function(){st.textContent='Could not read photo, try again.';};
+        r.readAsDataURL(f);
+      });
+    }
+    handle(document.getElementById('camIn'));
+    handle(document.getElementById('galIn'));
   })();
   </script>`, gym.gymCode);
 
