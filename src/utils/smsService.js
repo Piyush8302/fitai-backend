@@ -18,6 +18,11 @@ exports.sendOtpSms = async (phone, otp) => {
   // Remove +91 or 91 prefix if present
   const cleanPhone = phone.replace(/^\+?91/, '').trim();
 
+  // SMS Retriever format: starts with "<#>" and ends with the 11-char app hash
+  // (set OTP_APP_HASH in env) so the app can auto-read the OTP without any tap.
+  const appHash = (process.env.OTP_APP_HASH || '').trim();
+  const message = `<#> Your FitAI OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.${appHash ? `\n${appHash}` : ''}`;
+
   try {
     const response = await fetch('https://www.fast2sms.com/dev/bulkV2', {
       method: 'POST',
@@ -27,7 +32,7 @@ exports.sendOtpSms = async (phone, otp) => {
       },
       body: JSON.stringify({
         route: 'q',
-        message: `Your FitAI OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.`,
+        message,
         flash: 0,
         numbers: cleanPhone,
       }),
