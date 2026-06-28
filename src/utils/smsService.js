@@ -38,7 +38,8 @@ async function send2Factor(phone, otp) {
   // Template optional: without one, 2Factor uses your account's DEFAULT OTP template
   // (so you can go live without creating a custom template).
   const tmpl = (process.env.TWOFACTOR_TEMPLATE_NAME || '').trim();
-  const base = `https://2factor.in/API/V1/${apiKey}/SMS/+91${to}/${encodeURIComponent(otp)}`;
+  // 10-digit number (no +91) is what 2Factor's SMS endpoint expects
+  const base = `https://2factor.in/API/V1/${apiKey}/SMS/${to}/${encodeURIComponent(otp)}`;
   const url = tmpl ? `${base}/${encodeURIComponent(tmpl)}` : base;
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
