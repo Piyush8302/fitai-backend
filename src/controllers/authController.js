@@ -42,6 +42,16 @@ exports.registerOwner = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc    Check if a phone number has any account (user-login gating)
+exports.phoneExists = async (req, res, next) => {
+  try {
+    const cleanPhone = String(req.body.phone || '').replace(/\D/g, '');
+    if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
+    const user = await User.findOne({ phone: cleanPhone }).select('_id');
+    res.json({ success: true, exists: !!user });
+  } catch (e) { next(e); }
+};
+
 // @desc    Check if a phone is an approved gym owner/staff (admin-login gating)
 exports.ownerStatus = async (req, res, next) => {
   try {
