@@ -35,8 +35,11 @@ async function send2Factor(phone, otp) {
   const apiKey = process.env.TWOFACTOR_API_KEY;
   const to = tenDigit(phone);
   if (!apiKey) { console.log(`[SMS:2factor] not configured. OTP for ${to}: ${otp}`); return { success: true, fallback: true }; }
-  const tmpl = process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP1';
-  const url = `https://2factor.in/API/V1/${apiKey}/SMS/+91${to}/${encodeURIComponent(otp)}/${encodeURIComponent(tmpl)}`;
+  // Template optional: without one, 2Factor uses your account's DEFAULT OTP template
+  // (so you can go live without creating a custom template).
+  const tmpl = (process.env.TWOFACTOR_TEMPLATE_NAME || '').trim();
+  const base = `https://2factor.in/API/V1/${apiKey}/SMS/+91${to}/${encodeURIComponent(otp)}`;
+  const url = tmpl ? `${base}/${encodeURIComponent(tmpl)}` : base;
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
   if (data.Status === 'Success') { console.log(`[SMS:2factor] OTP sent to ${to}`); return { success: true }; }
