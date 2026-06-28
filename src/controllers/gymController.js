@@ -482,6 +482,18 @@ exports.markPayment = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Remove a member from the gym (delete the membership)
+exports.deleteMember = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    await membership.deleteOne();
+    res.json({ success: true, message: 'Member removed' });
+  } catch (e) { next(e); }
+};
+
 // @desc  Mark attendance for a member (staff scans member QR → userId)
 exports.markAttendance = async (req, res, next) => {
   try {

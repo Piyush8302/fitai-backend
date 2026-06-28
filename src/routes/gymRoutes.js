@@ -29,6 +29,7 @@ router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff 
 
 router.get('/:gymId/members', c.getMembers);         // gym members
 router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail
+router.delete('/member/:membershipId', c.deleteMember);        // remove a member
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
