@@ -78,11 +78,15 @@ exports.register = async (req, res, next) => {
     if (!name || !name.trim()) return res.status(400).json({ success: false, message: 'Please enter your name' });
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
     if (!password || password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    const cleanPhone = String(phone || '').replace(/\D/g, '');
+    if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Please enter a valid 10-digit mobile number' });
 
-    const exists = await User.findOne({ email });
-    if (exists) return res.status(400).json({ success: false, message: 'This email is already registered. Please login instead.' });
+    const emailExists = await User.findOne({ email });
+    if (emailExists) return res.status(400).json({ success: false, message: 'This email is already registered. Please login instead.' });
+    const phoneExists = await User.findOne({ phone: cleanPhone });
+    if (phoneExists) return res.status(400).json({ success: false, message: 'This mobile number is already registered. Please login instead.' });
 
-    const user = await User.create({ name, email, password, phone });
+    const user = await User.create({ name, email, password, phone: cleanPhone });
     const token = user.getSignedToken();
 
     sendWelcomeEmail(email, name).catch(err => console.error('Welcome email failed:', err.message));
