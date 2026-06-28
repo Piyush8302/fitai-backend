@@ -2,7 +2,7 @@
 // Sign up at https://www.fast2sms.com to get your API key
 // Set FAST2SMS_API_KEY in your environment variables
 
-exports.sendOtpSms = async (phone, otp) => {
+exports.sendOtpSms = async (phone, otp, appHash) => {
   if (!phone) {
     console.log('SMS skipped: no phone number provided');
     return { success: false, error: 'No phone number' };
@@ -18,10 +18,11 @@ exports.sendOtpSms = async (phone, otp) => {
   // Remove +91 or 91 prefix if present
   const cleanPhone = phone.replace(/^\+?91/, '').trim();
 
-  // SMS Retriever format: starts with "<#>" and ends with the 11-char app hash
-  // (set OTP_APP_HASH in env) so the app can auto-read the OTP without any tap.
-  const appHash = (process.env.OTP_APP_HASH || '').trim();
-  const message = `<#> Your FitAI OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.${appHash ? `\n${appHash}` : ''}`;
+  // SMS Retriever format: starts with "<#>" and ends with the 11-char app hash so
+  // the app auto-reads the OTP without any tap. The app sends its own hash (most
+  // reliable); fall back to OTP_APP_HASH env if not provided.
+  const hash = (appHash || process.env.OTP_APP_HASH || '').trim();
+  const message = `<#> Your FitAI OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.${hash ? `\n${hash}` : ''}`;
 
   try {
     const response = await fetch('https://www.fast2sms.com/dev/bulkV2', {

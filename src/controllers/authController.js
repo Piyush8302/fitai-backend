@@ -129,7 +129,7 @@ exports.login = async (req, res, next) => {
 // @desc    Send OTP (phone or email)
 exports.sendOtp = async (req, res, next) => {
   try {
-    const { phone, email } = req.body;
+    const { phone, email, appHash } = req.body;
     if (!phone && !email) return res.status(400).json({ success: false, message: 'Provide phone or email' });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -161,7 +161,7 @@ exports.sendOtp = async (req, res, next) => {
       }
       res.json({ success: true, message: 'OTP sent to email' });
     } else {
-      await sendOtpSms(phone, otp);
+      await sendOtpSms(phone, otp, appHash);
       res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
     }
   } catch (error) {
