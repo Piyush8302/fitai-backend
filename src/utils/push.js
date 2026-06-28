@@ -58,7 +58,18 @@ const notifyUsers = async (recipients, { title, body, type = 'info', data = {}, 
   });
   await Notification.insertMany(unique.map(u => ({ user: u._id, title, body, type, data })));
   const tokens = unique.map(u => u.expoPushToken).filter(Boolean);
-  if (tokens.length) await sendExpoPush(tokens, title, body, data, imageUrl);
+  if (tokens.length) {
+    // Expo caps a push message at ~4KB. A base64 photo (data URI) in `data` blows
+    // past that and the push is silently dropped — so the in-app bell shows it but
+    // no banner arrives. Strip heavy data-URI fields from the PUSH payload only
+    // (the in-app record above keeps the full avatar). The photo still shows in the
+    // push thumbnail via `imageUrl` (a small URL, not the base64).
+    const pushData = { ...data };
+    for (const k of Object.keys(pushData)) {
+      if (typeof pushData[k] === 'string' && pushData[k].startsWith('data:')) delete pushData[k];
+    }
+    await sendExpoPush(tokens, title, body, pushData, imageUrl);
+  }
 };
 
 module.exports = { sendExpoPush, notifyUsers };
