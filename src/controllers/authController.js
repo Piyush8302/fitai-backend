@@ -206,7 +206,7 @@ exports.verifyOtp = async (req, res, next) => {
     await user.save();
 
     const token = user.getSignedToken();
-    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete, role: user.role } });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete, role: user.role, canAccessCashbook: user.canAccessCashbook } });
   } catch (error) {
     next(error);
   }

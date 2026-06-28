@@ -37,11 +37,19 @@ const notifyGymTeam = async (gymId, { title, body, type = 'info', data = {}, ima
 const announceNewMember = (gymId, gymName, member = {}, excludeUserId) => {
   const hasPhoto = member.avatar && String(member.avatar).startsWith('data:');
   const imageUrl = hasPhoto && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined;
+  // membershipId + gymId let the app open the member's detail page on tap.
   return notifyGymTeam(gymId, {
     title: `🆕 New member at ${gymName || 'your gym'}`,
     body: `${member.name || 'A new member'}${member.phone ? ` (${member.phone})` : ''} just joined. 🎉`,
     type: 'success',
-    data: { kind: 'new_member', gym: gymName, memberName: member.name, avatar: member.avatar || undefined },
+    data: {
+      kind: 'new_member',
+      screen: member.membershipId ? 'GymMemberDetail' : 'GymAdmin',
+      gymId: String(gymId),
+      membershipId: member.membershipId ? String(member.membershipId) : undefined,
+      memberId: member.id ? String(member.id) : undefined,
+      gym: gymName, memberName: member.name, avatar: member.avatar || undefined,
+    },
     imageUrl,
     excludeUserId,
   });
@@ -173,7 +181,7 @@ exports.addMember = async (req, res, next) => {
     // the member); only skip a STAFF member who added it themselves (no self-ping).
     const gym = await Gym.findById(gymId).select('name');
     const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
-    announceNewMember(gymId, gym?.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }, excludeId);
+    announceNewMember(gymId, gym?.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }, excludeId);
     res.status(201).json({ success: true, data: membership });
   } catch (e) { next(e); }
 };
@@ -225,7 +233,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate').sort({ createdAt: -1 });
+      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -237,6 +245,7 @@ exports.getStaff = async (req, res, next) => {
       return {
         _id: s._id, name: s.name, phone: s.phone, avatar: s.avatar,
         staffRole: s.staffRole, staffSalary: s.staffSalary, staffJoinDate: s.staffJoinDate,
+        canAccessCashbook: !!s.canAccessCashbook,
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
     }));
@@ -248,7 +257,7 @@ exports.getStaff = async (req, res, next) => {
 exports.updateStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;
-    const { name, staffRole, salary, gymId } = req.body;
+    const { name, staffRole, salary, gymId, canAccessCashbook } = req.body;
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
     if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your staff' });
@@ -256,13 +265,14 @@ exports.updateStaff = async (req, res, next) => {
     if (name !== undefined && name.trim()) staff.name = name.trim();
     if (staffRole !== undefined) staff.staffRole = staffRole;
     if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
+    if (canAccessCashbook !== undefined) staff.canAccessCashbook = !!canAccessCashbook;
     // Reassign to another gym the owner owns
     if (gymId && String(gymId) !== String(staff.staffGym)) {
       if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
       staff.staffGym = gymId;
     }
     await staff.save();
-    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym } });
+    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, canAccessCashbook: staff.canAccessCashbook } });
   } catch (e) { next(e); }
 };
 
@@ -516,7 +526,7 @@ exports.markAttendance = async (req, res, next) => {
       ]);
       // Owner always notified; skip only a staff who scanned it themselves.
       const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
-      announceNewMember(gymId, gym?.name, { id: userId, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, excludeId);
+      announceNewMember(gymId, gym?.name, { id: userId, membershipId: membership._id, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, excludeId);
     }
 
     const day = istDay();
@@ -735,7 +745,7 @@ exports.selfCheckIn = async (req, res, next) => {
         user: req.user.id, gym: gym._id, plan: 'trial', fee: 0,
         joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
       });
-      announceNewMember(gym._id, gym.name, { id: req.user.id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
+      announceNewMember(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
     }
     const day = istDay();
     try {
@@ -983,7 +993,7 @@ async function attendUser(gym, user) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
   if (!membership) {
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
-    announceNewMember(gym._id, gym.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
+    announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
   }
   const day = istDay();
   try {

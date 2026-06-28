@@ -43,6 +43,14 @@ exports.ownerOnly = (req, res, next) => {
   next();
 };
 
+// Cashbook access — owner always; a gym_staff only if the owner granted it.
+exports.cashbookAccess = (req, res, next) => {
+  if (req.user && req.user.role === 'gym_staff' && !req.user.canAccessCashbook) {
+    return res.status(403).json({ success: false, message: 'You do not have cashbook access' });
+  }
+  next();
+};
+
 // Premium only
 exports.premium = (req, res, next) => {
   if (req.user && (req.user.isPremium || req.user.role === 'admin')) {

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect, ownerOnly } = require('../middleware/auth');
+const { protect, ownerOnly, cashbookAccess } = require('../middleware/auth');
 const c = require('../controllers/gymController');
 
 // ---- PUBLIC (no login) — walk-in web check-in + avatar image (push thumbnails) ----
@@ -29,7 +29,7 @@ router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff 
 
 router.get('/:gymId/members', c.getMembers);         // gym members
 router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail
-router.delete('/member/:membershipId', c.deleteMember);        // remove a member
+router.delete('/member/:membershipId', ownerOnly, c.deleteMember); // remove a member (owner only — staff blocked)
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
@@ -38,10 +38,11 @@ router.get('/:gymId/kiosk-link', c.getKioskLink);    // long-lived counter-displ
 router.get('/:gymId/setloc-link', c.getSetlocLink);  // owner sets gym GPS for geofencing
 router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 
-// ---- Cashbook & reports (owner only — staff has no financial access) ----
-router.post('/cashbook', ownerOnly, c.addCashEntry);
-router.get('/:gymId/cashbook', ownerOnly, c.getCashbook);
-router.delete('/cashbook/:id', ownerOnly, c.deleteCashEntry);
+// ---- Cashbook (owner, or a staff the owner granted cashbook access to) ----
+router.post('/cashbook', cashbookAccess, c.addCashEntry);
+router.get('/:gymId/cashbook', cashbookAccess, c.getCashbook);
+router.delete('/cashbook/:id', cashbookAccess, c.deleteCashEntry);
+// ---- Reports stay owner-only ----
 router.get('/:gymId/report', ownerOnly, c.getMonthlyReport);
 
 // ---- Member ----
