@@ -197,6 +197,15 @@ exports.savePushToken = async (req, res, next) => {
     const { pushToken } = req.body;
     if (!pushToken) return res.status(400).json({ success: false, message: 'Provide pushToken' });
 
+    // A push token identifies ONE device, not a user. If the same phone was used
+    // to log into another account (e.g. owner + staff testing on one device), the
+    // token would sit on BOTH records and a notification for one user gets sent to
+    // the same device twice / misrouted. Clear it from everyone else first, so the
+    // currently logged-in user is the sole owner of this device's token.
+    await User.updateMany(
+      { _id: { $ne: req.user.id }, expoPushToken: pushToken },
+      { $unset: { expoPushToken: 1 } }
+    );
     await User.findByIdAndUpdate(req.user.id, { expoPushToken: pushToken });
     res.json({ success: true, message: 'Push token saved' });
   } catch (error) {
