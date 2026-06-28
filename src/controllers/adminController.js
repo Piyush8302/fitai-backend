@@ -5,7 +5,7 @@ const DietPlan = require('../models/DietPlan');
 const Subscription = require('../models/Subscription');
 const Tracking = require('../models/Tracking');
 const Gym = require('../models/Gym');
-const { sendLoginOtpEmail } = require('../utils/emailService');
+const { sendOwnerApprovedEmail } = require('../utils/emailService');
 
 // ===== GYM OWNER APPROVAL =====
 
@@ -30,6 +30,7 @@ exports.approveOwnerRequest = async (req, res, next) => {
 
     user.role = 'gym_owner';
     user.ownerStatus = 'approved';
+    await user.save();
 
     // Create their first gym from the requested name (if they have none yet)
     let gym = await Gym.findOne({ owner: user._id });
@@ -37,14 +38,11 @@ exports.approveOwnerRequest = async (req, res, next) => {
       gym = await Gym.create({ name: user.requestedGymName, owner: user._id, phone: user.phone });
     }
 
-    // Email a login OTP so they can sign in right away ("sab clear")
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
-    user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
-    await user.save();
-    try { await sendLoginOtpEmail(user.email, otp); } catch (e) { console.log('approval email failed:', e.message); }
+    // Notify the owner they're approved. No OTP here — when they log in, the normal
+    // login flow sends a fresh OTP (a pre-sent OTP would just get overwritten).
+    try { await sendOwnerApprovedEmail(user.email, user.name); } catch (e) { console.log('approval email failed:', e.message); }
 
-    res.json({ success: true, message: 'Approved — login OTP emailed to the owner', data: { id: user._id, gym: gym?._id } });
+    res.json({ success: true, message: 'Approved — owner notified by email', data: { id: user._id, gym: gym?._id } });
   } catch (e) { next(e); }
 };
 

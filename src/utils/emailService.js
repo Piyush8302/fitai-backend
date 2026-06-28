@@ -69,6 +69,23 @@ exports.sendLoginOtpEmail = async (email, otp) => {
   await sendEmail(email, 'FitAI - Login OTP', html);
 };
 
+exports.sendOwnerApprovedEmail = async (email, name) => {
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
+      <div style="text-align:center;margin-bottom:24px">
+        <span style="font-size:48px">&#127881;</span>
+        <h1 style="color:#6C63FF;margin:8px 0 0">You're Approved!</h1>
+      </div>
+      <p style="color:#ccc;text-align:center;font-size:16px">Hi ${name || 'there'},</p>
+      <p style="color:#888;text-align:center;font-size:14px;line-height:1.7">Your gym owner account on FitAI has been approved. &#127881;<br/><br/>
+      Open the FitAI app, tap <b style="color:#fff">Login as Admin</b>, and enter your registered <b style="color:#fff">phone number or email</b>. A one-time OTP will be sent so you can log in &mdash; no password needed.</p>
+      <hr style="border:none;border-top:1px solid #333;margin:24px 0">
+      <p style="text-align:center;color:#555;font-size:11px">FitAI - Your AI Fitness Companion</p>
+    </div>
+  `;
+  await sendEmail(email, 'FitAI - Your gym is approved! 🎉', html);
+};
+
 exports.sendWelcomeEmail = async (email, name) => {
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">
