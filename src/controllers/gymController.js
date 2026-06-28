@@ -242,6 +242,28 @@ exports.getStaff = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Edit a staff member's details (name, role, salary) and optionally reassign gym
+exports.updateStaff = async (req, res, next) => {
+  try {
+    const { staffId } = req.params;
+    const { name, staffRole, salary, gymId } = req.body;
+    const staff = await User.findById(staffId);
+    if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your staff' });
+
+    if (name !== undefined && name.trim()) staff.name = name.trim();
+    if (staffRole !== undefined) staff.staffRole = staffRole;
+    if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
+    // Reassign to another gym the owner owns
+    if (gymId && String(gymId) !== String(staff.staffGym)) {
+      if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+      staff.staffGym = gymId;
+    }
+    await staff.save();
+    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym } });
+  } catch (e) { next(e); }
+};
+
 // @desc  Remove a staff member (revert account to a normal user)
 exports.removeStaff = async (req, res, next) => {
   try {

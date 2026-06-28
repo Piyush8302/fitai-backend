@@ -22,6 +22,7 @@ router.post('/members', c.addMember);                // add member
 // ---- Staff management (owner only) ----
 router.post('/staff', ownerOnly, c.addStaff);                   // add staff
 router.post('/staff/attendance', c.markStaffAttendance);        // mark staff present (reception)
+router.put('/staff/:staffId', ownerOnly, c.updateStaff);        // edit staff details / reassign gym
 router.delete('/staff/:staffId', ownerOnly, c.removeStaff);     // remove staff
 router.get('/:gymId/staff', c.getStaff);             // gym staff + today presence
 router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff history
