@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const { sendOtpEmail, sendLoginOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { sendOtpSms } = require('../utils/smsService');
+const { canSendOtp, recordOtpSend } = require('../utils/otpRateLimit');
 
 // @desc    Register as a gym owner — creates a PENDING request (super-admin approves in panel)
 exports.registerOwner = async (req, res, next) => {
@@ -132,20 +133,27 @@ exports.sendOtp = async (req, res, next) => {
     const { phone, email, appHash } = req.body;
     if (!phone && !email) return res.status(400).json({ success: false, message: 'Provide phone or email' });
 
+    // Rate limit / abuse / duplicate-request guard (per recipient)
+    const key = phone ? String(phone).replace(/\D/g, '') : String(email).toLowerCase().trim();
+    const rl = canSendOtp(key);
+    if (!rl.ok) {
+      console.log(`[OTP] rate-limited ${key} (${rl.reason})`);
+      const message = rl.reason === 'cooldown'
+        ? `Please wait ${rl.wait}s before requesting another OTP`
+        : 'Too many OTP requests. Please try again later.';
+      return res.status(429).json({ success: false, message, retryAfter: rl.wait });
+    }
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
     let user;
     if (email) {
       user = await User.findOne({ email });
-      if (!user) {
-        user = await User.create({ email, name: 'User', authProvider: 'otp' });
-      }
+      if (!user) user = await User.create({ email, name: 'User', authProvider: 'otp' });
     } else {
       user = await User.findOne({ phone });
-      if (!user) {
-        user = await User.create({ phone, name: 'User', email: `${phone}@fitai.temp`, authProvider: 'otp' });
-      }
+      if (!user) user = await User.create({ phone, name: 'User', email: `${phone}@fitai.temp`, authProvider: 'otp' });
     }
 
     user.otp = otp;
@@ -156,14 +164,20 @@ exports.sendOtp = async (req, res, next) => {
       try {
         await sendLoginOtpEmail(email, otp);
       } catch (emailErr) {
-        console.error('Email OTP send failed:', emailErr.message);
-        return res.status(500).json({ success: false, message: 'Failed to send OTP email' });
+        console.error('[OTP] email send failed:', emailErr.message);
+        return res.status(502).json({ success: false, message: 'Failed to send OTP email. Please try again.' });
       }
-      res.json({ success: true, message: 'OTP sent to email' });
     } else {
-      await sendOtpSms(phone, otp, appHash);
-      res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
+      const sent = await sendOtpSms(phone, otp, appHash);
+      if (sent && sent.success === false) {
+        console.error('[OTP] sms send failed:', sent.error);
+        return res.status(502).json({ success: false, message: 'Failed to send OTP. Please try again.' });
+      }
     }
+
+    recordOtpSend(key);
+    console.log(`[OTP] sent via ${email ? 'email' : 'sms'} to ${key}`);
+    res.json({ success: true, message: 'OTP sent successfully', otp: process.env.NODE_ENV === 'development' ? otp : undefined });
   } catch (error) {
     next(error);
   }
