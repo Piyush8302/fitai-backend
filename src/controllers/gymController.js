@@ -169,9 +169,11 @@ exports.addMember = async (req, res, next) => {
       status: 'active',
       addedBy: req.user.id,
     });
-    // Notify owner + staff (skip whoever added the member)
+    // Notify the whole gym team. Owner is ALWAYS notified (even if the owner added
+    // the member); only skip a STAFF member who added it themselves (no self-ping).
     const gym = await Gym.findById(gymId).select('name');
-    announceNewMember(gymId, gym?.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }, req.user.id);
+    const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
+    announceNewMember(gymId, gym?.name, { id: user._id, name: user.name, phone: user.phone, avatar: user.avatar }, excludeId);
     res.status(201).json({ success: true, data: membership });
   } catch (e) { next(e); }
 };
@@ -512,7 +514,9 @@ exports.markAttendance = async (req, res, next) => {
         Gym.findById(gymId).select('name'),
         User.findById(userId).select('name phone avatar'),
       ]);
-      announceNewMember(gymId, gym?.name, { id: userId, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, req.user.id);
+      // Owner always notified; skip only a staff who scanned it themselves.
+      const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
+      announceNewMember(gymId, gym?.name, { id: userId, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, excludeId);
     }
 
     const day = istDay();
