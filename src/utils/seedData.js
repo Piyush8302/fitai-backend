@@ -11,21 +11,10 @@ const seedDB = async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('✅ Connected to MongoDB');
 
-    // Create admin user
-    const adminExists = await User.findOne({ email: 'admin@fitai.com' });
-    if (!adminExists) {
-      await User.create({
-        name: 'FitAI Admin',
-        email: 'admin@fitai.com',
-        password: 'admin123',
-        role: 'admin',
-        isPremium: true,
-        isProfileComplete: true,
-        age: 25, gender: 'male', height: 175, weight: 70,
-        fitnessGoal: 'maintenance', activityLevel: 'moderately_active',
-      });
-      console.log('✅ Admin user created (admin@fitai.com / admin123)');
-    }
+    // NOTE: No default admin is seeded here. The single super-admin is set via the
+    // POST /api/auth/seed-admin endpoint using ADMIN_EMAIL + ADMIN_PASSWORD env vars
+    // (defaults to yadavpiyush8302@gmail.com). A hardcoded admin@fitai.com/admin123
+    // was removed for security and to keep exactly one admin account.
 
     // Create test user
     const testExists = await User.findOne({ email: 'test@fitai.com' });

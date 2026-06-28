@@ -637,7 +637,8 @@ exports.uploadAvatar = async (req, res, next) => {
 exports.seedAdmin = async (req, res, next) => {
   try {
     const adminEmail = (process.env.ADMIN_EMAIL || 'yadavpiyush8302@gmail.com').toLowerCase();
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+    // Password comes ONLY from env (never a hardcoded default, never echoed back).
+    const adminPassword = process.env.ADMIN_PASSWORD;
 
     // Promote the configured email to super-admin (or create it). Existing account
     // with this email is upgraded so its data/login stays intact.
@@ -646,16 +647,29 @@ exports.seedAdmin = async (req, res, next) => {
       user.role = 'admin';
       user.isActive = true;
       user.isProfileComplete = true;
-      user.password = adminPassword; // reset to a known password (hashed on save)
+      if (adminPassword) user.password = adminPassword; // reset only if env provided
       await user.save();
-      return res.json({ success: true, message: 'Admin promoted', credentials: { email: adminEmail, password: adminPassword } });
+    } else {
+      if (!adminPassword) {
+        return res.status(400).json({ success: false, message: 'Set ADMIN_PASSWORD env to create the admin account.' });
+      }
+      user = await User.create({
+        name: 'FitAI Admin', email: adminEmail, password: adminPassword,
+        role: 'admin', isActive: true, isPremium: true, isProfileComplete: true,
+      });
     }
 
-    user = await User.create({
-      name: 'FitAI Admin', email: adminEmail, password: adminPassword,
-      role: 'admin', isActive: true, isPremium: true, isProfileComplete: true,
+    // Exactly ONE admin — strip admin role from every other account.
+    const demoted = await User.updateMany(
+      { role: 'admin', email: { $ne: adminEmail } },
+      { $set: { role: 'user' } }
+    );
+
+    res.json({
+      success: true,
+      message: `Super-admin set to ${adminEmail}. Other admins demoted: ${demoted.modifiedCount}.`,
+      email: adminEmail,
     });
-    res.status(201).json({ success: true, message: 'Admin created', credentials: { email: adminEmail, password: adminPassword } });
   } catch (error) {
     next(error);
   }
