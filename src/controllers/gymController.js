@@ -418,7 +418,7 @@ exports.getMemberDetail = async (req, res, next) => {
 // @desc  Mark a payment (cash collected offline)
 exports.markPayment = async (req, res, next) => {
   try {
-    const { membershipId, amount, plan, periodMonths } = req.body;
+    const { membershipId, amount, plan, periodMonths, dueDate } = req.body;
     const membership = await Membership.findById(membershipId);
     if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
@@ -431,7 +431,9 @@ exports.markPayment = async (req, res, next) => {
 
     const finalPlan = plan || membership.plan;
     membership.lastPaidDate = new Date();
-    membership.dueDate = addMonths(new Date(), months);
+    // Owner can fix a custom due date; otherwise it's auto-calculated from the plan
+    const customDue = dueDate ? new Date(dueDate) : null;
+    membership.dueDate = (customDue && !isNaN(customDue)) ? customDue : addMonths(new Date(), months);
     membership.status = 'active';
     if (plan) membership.plan = plan;
     if (amount) membership.fee = amount;
@@ -588,14 +590,22 @@ exports.deleteCashEntry = async (req, res, next) => {
 exports.getMonthlyReport = async (req, res, next) => {
   try {
     const { gymId } = req.params;
-    const { month } = req.query;
+    const { month, months } = req.query;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
+    const span = Math.max(1, Math.min(12, parseInt(months) || 1)); // 1..12 months
     let start, end, label;
-    if (month) { start = new Date(`${month}-01T00:00:00`); }
-    else { start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0); }
-    end = new Date(start); end.setMonth(end.getMonth() + 1);
-    label = start.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    // anchor = latest month in the range
+    let anchor;
+    if (month) { anchor = new Date(`${month}-01T00:00:00`); }
+    else { anchor = new Date(); anchor.setDate(1); anchor.setHours(0, 0, 0, 0); }
+    end = new Date(anchor); end.setMonth(end.getMonth() + 1);          // end of anchor month
+    start = new Date(anchor); start.setMonth(start.getMonth() - (span - 1)); // span months back
+    if (span > 1) {
+      label = `${start.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} – ${anchor.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}`;
+    } else {
+      label = anchor.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    }
 
     const gym = await Gym.findById(gymId);
     const memberships = await Membership.find({ gym: gymId }).populate('user', 'name phone');
