@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest } = require('../controllers/adminController');
+const { getMessages, resolveMessage, deleteMessage } = require('../controllers/supportController');
 const { protect, admin } = require('../middleware/auth');
 
 /**
@@ -117,5 +118,10 @@ router.put('/subscriptions/:id/reject', protect, admin, rejectPayment);
 router.get('/owner-requests', protect, admin, getOwnerRequests);
 router.put('/owner-requests/:userId/approve', protect, admin, approveOwnerRequest);
 router.put('/owner-requests/:userId/reject', protect, admin, rejectOwnerRequest);
+
+// Support / Contact Us messages
+router.get('/support', protect, admin, getMessages);
+router.put('/support/:id/resolve', protect, admin, resolveMessage);
+router.delete('/support/:id', protect, admin, deleteMessage);
 
 module.exports = router;

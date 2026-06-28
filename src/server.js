@@ -57,6 +57,7 @@ app.use('/api/favorites', require('./routes/favoritesRoutes'));
 app.use('/api/achievements', require('./routes/achievementsRoutes'));
 app.use('/api/notifications', require('./routes/notificationsRoutes'));
 app.use('/api/gym', require('./routes/gymRoutes'));
+app.use('/api/support', require('./routes/supportRoutes'));
 // Public gym check-in page (static QR, scanned by any phone camera)
 const gymC = require('./controllers/gymController');
 app.get('/g/setloc/:token', gymC.gymSetlocPage);     // owner sets gym GPS location

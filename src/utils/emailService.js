@@ -69,6 +69,24 @@ exports.sendLoginOtpEmail = async (email, otp) => {
   await sendEmail(email, 'FitAI - Login OTP', html);
 };
 
+// Notify the super-admin of a new "Contact Us" message
+exports.sendSupportEmail = async ({ name, email, phone, role, gymName, message }) => {
+  const to = process.env.ADMIN_EMAIL || 'yadavpiyush8302@gmail.com';
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:28px;color:#fff">
+      <h2 style="color:#6C63FF;margin:0 0 16px">📩 New Support Message</h2>
+      <table style="width:100%;font-size:14px;color:#ccc">
+        <tr><td style="color:#888;padding:4px 0">Name</td><td>${name || '-'}</td></tr>
+        <tr><td style="color:#888;padding:4px 0">Role</td><td>${role || 'user'}${gymName ? ` (${gymName})` : ''}</td></tr>
+        <tr><td style="color:#888;padding:4px 0">Email</td><td>${email || '-'}</td></tr>
+        <tr><td style="color:#888;padding:4px 0">Phone</td><td>${phone || '-'}</td></tr>
+      </table>
+      <div style="background:#1A1A2E;border-radius:10px;padding:16px;margin-top:16px;color:#fff;font-size:14px;line-height:1.6">${String(message || '').replace(/</g, '&lt;')}</div>
+      <p style="color:#555;font-size:11px;margin-top:20px">View & reply in the FitAI admin panel.</p>
+    </div>`;
+  await sendEmail(to, `FitAI Support — ${name || 'User'} (${role || 'user'})`, html);
+};
+
 exports.sendOwnerApprovedEmail = async (email, name) => {
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#0D0D1A;border-radius:12px;padding:32px;color:#fff">

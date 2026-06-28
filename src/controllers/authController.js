@@ -636,26 +636,26 @@ exports.uploadAvatar = async (req, res, next) => {
 // @desc    Seed admin user
 exports.seedAdmin = async (req, res, next) => {
   try {
-    const adminExists = await User.findOne({ role: 'admin' });
-    if (adminExists) {
-      return res.json({ success: true, message: 'Admin already exists', email: adminExists.email });
+    const adminEmail = (process.env.ADMIN_EMAIL || 'yadavpiyush8302@gmail.com').toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+
+    // Promote the configured email to super-admin (or create it). Existing account
+    // with this email is upgraded so its data/login stays intact.
+    let user = await User.findOne({ email: adminEmail });
+    if (user) {
+      user.role = 'admin';
+      user.isActive = true;
+      user.isProfileComplete = true;
+      user.password = adminPassword; // reset to a known password (hashed on save)
+      await user.save();
+      return res.json({ success: true, message: 'Admin promoted', credentials: { email: adminEmail, password: adminPassword } });
     }
 
-    const admin = await User.create({
-      name: 'FitAI Admin',
-      email: 'admin@fitai.com',
-      password: 'admin123',
-      role: 'admin',
-      isActive: true,
-      isPremium: true,
-      isProfileComplete: true,
+    user = await User.create({
+      name: 'FitAI Admin', email: adminEmail, password: adminPassword,
+      role: 'admin', isActive: true, isPremium: true, isProfileComplete: true,
     });
-
-    res.status(201).json({
-      success: true,
-      message: 'Admin user created',
-      credentials: { email: 'admin@fitai.com', password: 'admin123' },
-    });
+    res.status(201).json({ success: true, message: 'Admin created', credentials: { email: adminEmail, password: adminPassword } });
   } catch (error) {
     next(error);
   }
