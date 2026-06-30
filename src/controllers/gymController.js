@@ -650,9 +650,9 @@ exports.getMonthlyReport = async (req, res, next) => {
     end = new Date(anchor); end.setMonth(end.getMonth() + 1);          // end of anchor month
     start = new Date(anchor); start.setMonth(start.getMonth() - (span - 1)); // span months back
     if (span > 1) {
-      label = `${start.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} – ${anchor.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}`;
+      label = `${start.toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })} – ${anchor.toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}`;
     } else {
-      label = anchor.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      label = anchor.toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
     }
 
     const gym = await Gym.findById(gymId);
@@ -826,8 +826,8 @@ async function attendanceHtml(gym, user) {
   const rows = list.map(a => {
     const d = new Date(a.checkInAt);
     return `<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #2c2f4a">
-      <span style="color:#fff;font-size:13px">✅ ${d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
-      <span style="color:#9092b0;font-size:12px">${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
+      <span style="color:#fff;font-size:13px">✅ ${d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}</span>
+      <span style="color:#9092b0;font-size:12px">${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}</span>
     </div>`;
   }).join('');
   return `<div style="margin-top:22px;text-align:left">
