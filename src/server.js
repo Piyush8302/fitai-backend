@@ -105,12 +105,13 @@ var dp=null,b=document.getElementById('installBtn');
 window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();dp=e;if(b)b.style.display='block';});
 if(b){b.addEventListener('click',function(){if(dp){dp.prompt();dp=null;b.style.display='none';}});}
 window.addEventListener('appinstalled',function(){if(b)b.style.display='none';});
-// iOS Safari has no beforeinstallprompt event, so the button above never shows.
-// Detect iOS (and not already installed) and show manual Add-to-Home-Screen steps.
+// iOS Safari has no beforeinstallprompt event, so the Android button never shows.
+// Apple blocks programmatic install — best we can do is a guided overlay with steps.
 var isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 var standalone=(window.navigator.standalone===true)||(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);
-var ios=document.getElementById('iosInstall');
-if(ios&&isIOS&&!standalone){ios.style.display='block';}`
+var ib=document.getElementById('iosBtn'),sheet=document.getElementById('iosSheet');
+if(ib&&isIOS&&!standalone){ib.style.display='block';ib.addEventListener('click',function(){if(sheet)sheet.style.display='block';});}
+if(sheet){sheet.addEventListener('click',function(e){if(e.target===sheet)sheet.style.display='none';});}`
   );
 });
 

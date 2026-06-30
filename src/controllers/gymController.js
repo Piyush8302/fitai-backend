@@ -777,20 +777,32 @@ button{width:100%;margin-top:22px;padding:15px;border:0;border-radius:12px;backg
 a.btn{display:block;text-align:center;text-decoration:none;margin-top:18px;padding:13px;border-radius:12px;background:#6C63FF;color:#fff;font-weight:700}
 .ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}
 #installBtn{display:none;margin-top:14px;background:#222438;border:1px solid #6C63FF;color:#8B85FF}
-#iosInstall{display:none;margin-top:16px;padding:14px 16px;border-radius:12px;background:rgba(108,99,255,0.10);border:1px solid rgba(108,99,255,0.35);text-align:left}
-#iosInstall .t{font-weight:700;font-size:14px;margin-bottom:8px;color:#fff}
-#iosInstall ol{margin:0;padding-left:18px;color:#c2c3da;font-size:13px;line-height:1.8}
-#iosInstall b{color:#8B85FF}</style></head><body>
+#iosBtn{display:none;margin-top:14px;background:#6C63FF;color:#fff}
+#iosSheet{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:50}
+#iosSheet .box{position:absolute;left:16px;right:16px;bottom:104px;background:#222438;border:1px solid #6C63FF;border-radius:18px;padding:22px}
+#iosSheet h3{margin:0 0 12px;font-size:17px;color:#fff}
+#iosSheet ol{margin:0;padding-left:20px;color:#c2c3da;font-size:14px;line-height:1.9}
+#iosSheet b{color:#8B85FF}
+#iosSheet .done{margin-top:16px;background:#6C63FF;color:#fff}
+#iosTip{position:absolute;bottom:62px;left:0;right:0;text-align:center;color:#fff;font-size:14px;font-weight:700;text-shadow:0 1px 4px #000}
+#iosArrow{position:absolute;bottom:12px;left:50%;font-size:42px;animation:iosbounce 1s infinite}
+@keyframes iosbounce{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(9px)}}</style></head><body>
 <div class="card">${body}
 <button id="installBtn" type="button">📲 Install this as an app</button>
-<div id="iosInstall">
-  <div class="t">📲 Add to Home Screen (iPhone)</div>
-  <ol>
-    <li>In <b>Safari</b>, tap the <b>Share</b> button (⬆️) at the bottom</li>
-    <li>Scroll and choose <b>"Add to Home Screen"</b></li>
-    <li>Tap <b>Add</b> — the app icon appears on your home screen 🎉</li>
-  </ol>
+<button id="iosBtn" type="button">📲 Install App</button>
 </div>
+<div id="iosSheet">
+  <div id="iosTip">Tap <b>Share</b> here</div>
+  <div id="iosArrow">⬇️</div>
+  <div class="box">
+    <h3>📲 Add to Home Screen</h3>
+    <ol>
+      <li>Tap the <b>Share</b> button (⬆️) in Safari's bottom bar</li>
+      <li>Scroll down &amp; tap <b>"Add to Home Screen"</b></li>
+      <li>Tap <b>Add</b> — done! 🎉</li>
+    </ol>
+    <button class="done" type="button" onclick="document.getElementById('iosSheet').style.display='none'">Got it</button>
+  </div>
 </div>
 <script src="/gym-app.js"></script></body></html>`;
 
