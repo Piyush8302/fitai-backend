@@ -776,9 +776,21 @@ input{width:100%;padding:14px;border-radius:12px;border:1px solid #363a5c;backgr
 button{width:100%;margin-top:22px;padding:15px;border:0;border-radius:12px;background:#6C63FF;color:#fff;font-size:16px;font-weight:700}
 a.btn{display:block;text-align:center;text-decoration:none;margin-top:18px;padding:13px;border-radius:12px;background:#6C63FF;color:#fff;font-weight:700}
 .ok{text-align:center}.ok .big{font-size:52px}.muted{color:#9092b0;font-size:13px;line-height:1.5}
-#installBtn{display:none;margin-top:14px;background:#222438;border:1px solid #6C63FF;color:#8B85FF}</style></head><body>
+#installBtn{display:none;margin-top:14px;background:#222438;border:1px solid #6C63FF;color:#8B85FF}
+#iosInstall{display:none;margin-top:16px;padding:14px 16px;border-radius:12px;background:rgba(108,99,255,0.10);border:1px solid rgba(108,99,255,0.35);text-align:left}
+#iosInstall .t{font-weight:700;font-size:14px;margin-bottom:8px;color:#fff}
+#iosInstall ol{margin:0;padding-left:18px;color:#c2c3da;font-size:13px;line-height:1.8}
+#iosInstall b{color:#8B85FF}</style></head><body>
 <div class="card">${body}
 <button id="installBtn" type="button">📲 Install this as an app</button>
+<div id="iosInstall">
+  <div class="t">📲 Add to Home Screen (iPhone)</div>
+  <ol>
+    <li>In <b>Safari</b>, tap the <b>Share</b> button (⬆️) at the bottom</li>
+    <li>Scroll and choose <b>"Add to Home Screen"</b></li>
+    <li>Tap <b>Add</b> — the app icon appears on your home screen 🎉</li>
+  </ol>
+</div>
 </div>
 <script src="/gym-app.js"></script></body></html>`;
 
