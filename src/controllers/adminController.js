@@ -161,6 +161,43 @@ exports.deactivateUser = async (req, res, next) => {
   }
 };
 
+// @desc    Update a user's email and/or phone (admin handles change requests).
+//          Owners/staff/users can't self-change contact for security — they send a
+//          support request and the super-admin applies it here, with uniqueness checks.
+exports.updateUserContact = async (req, res, next) => {
+  try {
+    const { email, phone } = req.body;
+    if (!email && !phone) {
+      return res.status(400).json({ success: false, message: 'Provide a new email or phone' });
+    }
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (email !== undefined && email !== '') {
+      const e = String(email).toLowerCase().trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+        return res.status(400).json({ success: false, message: 'Invalid email address' });
+      }
+      const dup = await User.findOne({ email: e, _id: { $ne: user._id } });
+      if (dup) return res.status(409).json({ success: false, message: 'That email is already used by another account' });
+      user.email = e;
+    }
+
+    if (phone !== undefined && phone !== '') {
+      const p = String(phone).replace(/\D/g, '');
+      if (p.length < 10) return res.status(400).json({ success: false, message: 'Enter a valid 10-digit phone' });
+      const dup = await User.findOne({ phone: p, _id: { $ne: user._id } });
+      if (dup) return res.status(409).json({ success: false, message: 'That phone is already used by another account' });
+      user.phone = p;
+    }
+
+    await user.save();
+    res.json({ success: true, message: 'Contact details updated', data: { id: user._id, name: user.name, email: user.email, phone: user.phone } });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Get all subscriptions
 exports.getSubscriptions = async (req, res, next) => {
   try {

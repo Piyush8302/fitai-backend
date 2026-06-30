@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest } = require('../controllers/adminController');
 const { getMessages, resolveMessage, deleteMessage } = require('../controllers/supportController');
 const { protect, admin } = require('../middleware/auth');
 
@@ -95,6 +95,7 @@ router.put('/users/:id/toggle-premium', protect, admin, togglePremium);
  *       200: { description: User deactivated }
  */
 router.put('/users/:id/deactivate', protect, admin, deactivateUser);
+router.put('/users/:id/contact', protect, admin, updateUserContact);
 
 /**
  * @swagger
