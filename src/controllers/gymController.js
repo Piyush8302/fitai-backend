@@ -43,6 +43,30 @@ const gymHoursLabel = (gym) => {
   return (gym?.openTime && gym?.closeTime) ? `${gym.openTime}–${gym.closeTime}` : '';
 };
 
+const HHMM = /^([01]?\d|2[0-3]):[0-5]\d$/;
+// Clean an incoming slots array → [{open, close}]; throws a message if a time is bad.
+const sanitizeSlots = (slots) => {
+  const out = [];
+  if (Array.isArray(slots)) {
+    for (const s of slots) {
+      if (!s || (!s.open && !s.close)) continue;
+      if (!HHMM.test(s.open) || !HHMM.test(s.close)) throw new Error('Each slot time must be HH:MM (24-hour), e.g. 06:00');
+      out.push({ open: s.open, close: s.close });
+    }
+  }
+  return out;
+};
+// Clean owner-set plan prices → only known plan keys, non-negative numbers.
+const sanitizePrices = (pp) => {
+  const out = {};
+  if (pp && typeof pp === 'object') {
+    ['monthly', 'quarterly', 'half_yearly', 'yearly'].forEach((k) => {
+      if (pp[k] !== undefined && pp[k] !== '') out[k] = Math.max(0, Math.round(Number(pp[k]) || 0));
+    });
+  }
+  return out;
+};
+
 // Public base URL of this backend — used to build avatar image URLs for push.
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://fitai-backend-icbh.onrender.com';
 
@@ -146,7 +170,7 @@ exports.getAvatarImage = async (req, res) => {
 // @desc  Create a gym (becomes a gym_owner)
 exports.createGym = async (req, res, next) => {
   try {
-    const { name, location, city, phone, lat, lng, ownerPhone, slots, openTime, closeTime } = req.body;
+    const { name, location, city, phone, lat, lng, ownerPhone, slots, openTime, closeTime, planPrices } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Gym name required' });
     const okTime = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
     // Build clean open–close slots (skip blanks). Empty = 24×7.
@@ -176,8 +200,37 @@ exports.createGym = async (req, res, next) => {
       await User.findByIdAndUpdate(req.user.id, { phone: op });
     }
 
-    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng, slots: cleanSlots, openTime: openTime || '', closeTime: closeTime || '' });
+    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng, slots: cleanSlots, openTime: openTime || '', closeTime: closeTime || '', planPrices: sanitizePrices(planPrices) });
     res.status(201).json({ success: true, data: gym });
+  } catch (e) { next(e); }
+};
+
+// @desc  Edit a gym — owner only. Update name, location, hours (slots) & plan prices.
+exports.updateGym = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const gym = await Gym.findById(gymId);
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+
+    const { name, location, city, phone, slots, planPrices } = req.body;
+    if (name !== undefined) {
+      if (!String(name).trim()) return res.status(400).json({ success: false, message: 'Gym name cannot be empty' });
+      gym.name = String(name).trim();
+    }
+    if (location !== undefined) gym.location = String(location).trim();
+    if (city !== undefined) gym.city = String(city).trim();
+    if (phone !== undefined) gym.phone = String(phone).trim();
+    if (slots !== undefined) {
+      try { gym.slots = sanitizeSlots(slots); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    if (planPrices !== undefined) {
+      const clean = sanitizePrices(planPrices);
+      Object.keys(clean).forEach((k) => { gym.planPrices[k] = clean[k]; });
+    }
+    await gym.save();
+    res.json({ success: true, data: gym });
   } catch (e) { next(e); }
 };
 

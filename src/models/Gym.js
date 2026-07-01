@@ -23,6 +23,14 @@ const gymSchema = new mongoose.Schema({
   // Legacy single window (kept for backward compatibility; slots take priority).
   openTime: { type: String, trim: true, default: '' },
   closeTime: { type: String, trim: true, default: '' },
+  // Owner-set fee plans (₹). Monthly & Quarterly are the common presets; the rest
+  // are optional. Used to pre-fill the fee when adding a member / marking payment.
+  planPrices: {
+    monthly: { type: Number, default: 0 },
+    quarterly: { type: Number, default: 0 },
+    half_yearly: { type: Number, default: 0 },
+    yearly: { type: Number, default: 0 },
+  },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 

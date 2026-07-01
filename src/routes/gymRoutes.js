@@ -12,6 +12,7 @@ router.use(protect);
 
 // ---- Owner / Staff ----
 router.post('/', ownerOnly, c.createGym);            // create gym (owner only)
+router.put('/:gymId', ownerOnly, c.updateGym);       // edit gym (owner only)
 router.get('/mine', c.getMyGyms);                    // my gyms
 // All-branches combined (must be BEFORE /:gymId/* so "all" isn't read as a gymId)
 router.get('/all/members', c.getAllMembers);
