@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect, ownerOnly, cashbookAccess } = require('../middleware/auth');
+const { protect, ownerOnly, cashbookAccess, reportsAccess } = require('../middleware/auth');
 const c = require('../controllers/gymController');
 
 // ---- PUBLIC (no login) — walk-in web check-in + avatar image (push thumbnails) ----
@@ -42,8 +42,8 @@ router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 router.post('/cashbook', cashbookAccess, c.addCashEntry);
 router.get('/:gymId/cashbook', cashbookAccess, c.getCashbook);
 router.delete('/cashbook/:id', cashbookAccess, c.deleteCashEntry);
-// ---- Reports stay owner-only ----
-router.get('/:gymId/report', ownerOnly, c.getMonthlyReport);
+// ---- Reports (owner, or a staff the owner granted reports access to) ----
+router.get('/:gymId/report', reportsAccess, c.getMonthlyReport);
 
 // ---- Member ----
 router.get('/my/card', c.getMyCard);                 // membership card + gyms

@@ -66,6 +66,7 @@ const userSchema = new mongoose.Schema({
   staffSalary: { type: Number },             // monthly salary (optional)
   staffJoinDate: { type: Date },             // when added as staff
   canAccessCashbook: { type: Boolean, default: false }, // owner can grant a staff cashbook access
+  canAccessReports: { type: Boolean, default: false },  // owner can grant a staff reports access
 }, { timestamps: true });
 
 // Hash password

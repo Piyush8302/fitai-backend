@@ -51,6 +51,14 @@ exports.cashbookAccess = (req, res, next) => {
   next();
 };
 
+// Reports access — owner always; a gym_staff only if the owner granted it.
+exports.reportsAccess = (req, res, next) => {
+  if (req.user && req.user.role === 'gym_staff' && !req.user.canAccessReports) {
+    return res.status(403).json({ success: false, message: 'You do not have reports access' });
+  }
+  next();
+};
+
 // Premium only
 exports.premium = (req, res, next) => {
   if (req.user && (req.user.isPremium || req.user.role === 'admin')) {

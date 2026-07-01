@@ -12,9 +12,15 @@ const gymSchema = new mongoose.Schema({
   // Optional geofence for self check-in
   lat: { type: Number },
   lng: { type: Number },
-  // Operating hours (IST, "HH:MM"). If both set, self/web check-in attendance is
-  // only marked within this window; registration is still allowed any time.
-  // Empty = open 24h (no restriction).
+  // Operating hours (IST, "HH:MM"). Gyms often run two shifts (morning + evening),
+  // so hours are a list of open–close slots; owners can add extra/between slots.
+  // Attendance is marked only if the current time is inside ANY slot; registration
+  // is always allowed. Empty slots = open 24×7 (no restriction).
+  slots: {
+    type: [{ open: { type: String, trim: true }, close: { type: String, trim: true }, _id: false }],
+    default: [],
+  },
+  // Legacy single window (kept for backward compatibility; slots take priority).
   openTime: { type: String, trim: true, default: '' },
   closeTime: { type: String, trim: true, default: '' },
   isActive: { type: Boolean, default: true },

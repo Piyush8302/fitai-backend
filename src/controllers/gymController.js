@@ -15,15 +15,32 @@ const istDay = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600 * 1000).toI
 // Current time in IST as minutes-since-midnight
 const istMinutes = () => { const d = new Date(Date.now() + 5.5 * 3600 * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
 const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
-// Is the gym open right now? No hours set (or open==close) → always open.
-// Supports overnight windows (e.g. 22:00–06:00).
-const gymOpenNow = (gym) => {
-  const o = hhmmToMin(gym?.openTime), c = hhmmToMin(gym?.closeTime);
-  if (o == null || c == null || o === c) return true;
-  const now = istMinutes();
-  return o < c ? (now >= o && now <= c) : (now >= o || now <= c);
+// Is `now` (IST minutes) inside an open–close window? Supports overnight (22:00–06:00).
+const inWindow = (o, c) => { const now = istMinutes(); return o < c ? (now >= o && now <= c) : (now >= o || now <= c); };
+// Collect valid [open,close] windows from the gym's slots (or legacy single window).
+const gymWindows = (gym) => {
+  const out = [];
+  (Array.isArray(gym?.slots) ? gym.slots : []).forEach((s) => {
+    const o = hhmmToMin(s.open), c = hhmmToMin(s.close);
+    if (o != null && c != null && o !== c) out.push([o, c]);
+  });
+  if (!out.length) {
+    const o = hhmmToMin(gym?.openTime), c = hhmmToMin(gym?.closeTime);
+    if (o != null && c != null && o !== c) out.push([o, c]);
+  }
+  return out;
 };
-const gymHoursLabel = (gym) => (gym?.openTime && gym?.closeTime) ? `${gym.openTime}–${gym.closeTime}` : '';
+// Open now if no windows defined (24×7) or the current time is inside ANY window.
+const gymOpenNow = (gym) => {
+  const w = gymWindows(gym);
+  return w.length === 0 || w.some(([o, c]) => inWindow(o, c));
+};
+// Human label like "06:00–10:00, 17:00–22:00" (empty = 24×7).
+const gymHoursLabel = (gym) => {
+  const slots = (Array.isArray(gym?.slots) ? gym.slots : []).filter((s) => s.open && s.close);
+  if (slots.length) return slots.map((s) => `${s.open}–${s.close}`).join(', ');
+  return (gym?.openTime && gym?.closeTime) ? `${gym.openTime}–${gym.closeTime}` : '';
+};
 
 // Public base URL of this backend — used to build avatar image URLs for push.
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://fitai-backend-icbh.onrender.com';
@@ -122,10 +139,19 @@ exports.getAvatarImage = async (req, res) => {
 // @desc  Create a gym (becomes a gym_owner)
 exports.createGym = async (req, res, next) => {
   try {
-    const { name, location, city, phone, lat, lng, ownerPhone, openTime, closeTime } = req.body;
+    const { name, location, city, phone, lat, lng, ownerPhone, slots, openTime, closeTime } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Gym name required' });
-    const okTime = (t) => t === undefined || t === '' || /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
-    if (!okTime(openTime) || !okTime(closeTime)) return res.status(400).json({ success: false, message: 'Time must be HH:MM (24-hour)' });
+    const okTime = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
+    // Build clean open–close slots (skip blanks). Empty = 24×7.
+    const cleanSlots = [];
+    if (Array.isArray(slots)) {
+      for (const s of slots) {
+        if (!s || (!s.open && !s.close)) continue;
+        if (!okTime(s.open) || !okTime(s.close)) return res.status(400).json({ success: false, message: 'Each slot time must be HH:MM (24-hour), e.g. 06:00' });
+        cleanSlots.push({ open: s.open, close: s.close });
+      }
+    }
+    if ((openTime && !okTime(openTime)) || (closeTime && !okTime(closeTime))) return res.status(400).json({ success: false, message: 'Time must be HH:MM (24-hour)' });
 
     // Only an APPROVED gym owner (or super admin) can create gyms — no direct
     // self-promotion. New owners must register and be approved in the admin panel.
@@ -143,7 +169,7 @@ exports.createGym = async (req, res, next) => {
       await User.findByIdAndUpdate(req.user.id, { phone: op });
     }
 
-    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng, openTime: openTime || '', closeTime: closeTime || '' });
+    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng, slots: cleanSlots, openTime: openTime || '', closeTime: closeTime || '' });
     res.status(201).json({ success: true, data: gym });
   } catch (e) { next(e); }
 };
@@ -248,7 +274,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook').sort({ createdAt: -1 });
+      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook canAccessReports').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -261,6 +287,7 @@ exports.getStaff = async (req, res, next) => {
         _id: s._id, name: s.name, phone: s.phone, avatar: s.avatar,
         staffRole: s.staffRole, staffSalary: s.staffSalary, staffJoinDate: s.staffJoinDate,
         canAccessCashbook: !!s.canAccessCashbook,
+        canAccessReports: !!s.canAccessReports,
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
     }));
@@ -272,7 +299,7 @@ exports.getStaff = async (req, res, next) => {
 exports.updateStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;
-    const { name, staffRole, salary, gymId, canAccessCashbook } = req.body;
+    const { name, staffRole, salary, gymId, canAccessCashbook, canAccessReports } = req.body;
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
     if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your staff' });
@@ -281,13 +308,14 @@ exports.updateStaff = async (req, res, next) => {
     if (staffRole !== undefined) staff.staffRole = staffRole;
     if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
     if (canAccessCashbook !== undefined) staff.canAccessCashbook = !!canAccessCashbook;
+    if (canAccessReports !== undefined) staff.canAccessReports = !!canAccessReports;
     // Reassign to another gym the owner owns
     if (gymId && String(gymId) !== String(staff.staffGym)) {
       if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
       staff.staffGym = gymId;
     }
     await staff.save();
-    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, canAccessCashbook: staff.canAccessCashbook } });
+    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, canAccessCashbook: staff.canAccessCashbook, canAccessReports: staff.canAccessReports } });
   } catch (e) { next(e); }
 };
 
