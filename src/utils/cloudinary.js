@@ -2,30 +2,36 @@
 // Uploads base64 photos to Cloudinary and stores only the URL, so the DB stays
 // tiny (URL ~80 bytes vs ~70 KB base64) → ~10x more members on the free MongoDB.
 //
-// Set these env vars (Render → Environment) to turn it ON:
-//   CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
-// If they are NOT set, everything falls back to the OLD base64-in-DB behavior —
+// Turn it ON with EITHER of these (Render → Environment):
+//   A) three vars: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+//   B) one var:    CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
+// If NEITHER is set, everything falls back to the OLD base64-in-DB behavior —
 // nothing breaks, so this is safe to deploy before the account is ready.
 
 const cloudinary = require('cloudinary').v2;
 
-const configured = !!(
+const hasParts = !!(
   process.env.CLOUDINARY_CLOUD_NAME &&
   process.env.CLOUDINARY_API_KEY &&
   process.env.CLOUDINARY_API_SECRET
 );
+const hasUrl = !!process.env.CLOUDINARY_URL;
+const configured = hasParts || hasUrl;
 
-if (configured) {
+if (hasParts) {
   cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET,
     secure: true,
   });
-  console.log('[cloudinary] enabled — avatars will be stored as URLs');
-} else {
-  console.log('[cloudinary] not configured — falling back to base64 avatars');
+} else if (hasUrl) {
+  // The SDK auto-reads CLOUDINARY_URL; just force https.
+  cloudinary.config({ secure: true });
 }
+console.log(configured
+  ? '[cloudinary] enabled — avatars will be stored as URLs'
+  : '[cloudinary] not configured — falling back to base64 avatars');
 
 // Turn an avatar value into something small to store.
 //  - base64 data URI + Cloudinary configured  → upload, return the CDN URL
