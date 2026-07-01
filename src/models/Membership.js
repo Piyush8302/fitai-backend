@@ -9,7 +9,9 @@ const membershipSchema = new mongoose.Schema({
   joinDate: { type: Date, default: Date.now },
   dueDate: { type: Date },          // next fee due date
   lastPaidDate: { type: Date },
-  status: { type: String, enum: ['active', 'expired', 'frozen'], default: 'active' },
+  // active = normal • inactive = temporarily deactivated • blocked = banned (can't
+  // check in) • left = member quit the gym • expired/frozen = legacy states.
+  status: { type: String, enum: ['active', 'expired', 'frozen', 'inactive', 'blocked', 'left'], default: 'active' },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // owner/staff who added
   note: { type: String },
 }, { timestamps: true });

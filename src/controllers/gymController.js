@@ -36,6 +36,14 @@ const gymOpenNow = (gym) => {
   const w = gymWindows(gym);
   return w.length === 0 || w.some(([o, c]) => inWindow(o, c));
 };
+
+// A blocked / deactivated / left member cannot mark attendance.
+const NO_CHECKIN_STATUSES = ['blocked', 'inactive', 'left'];
+const memberBlockedMsg = (m) =>
+  m?.status === 'blocked' ? 'This member is blocked and cannot check in.'
+  : m?.status === 'inactive' ? 'This member is deactivated. Reactivate them to allow check-in.'
+  : m?.status === 'left' ? 'This member has left the gym. Reactivate them to allow check-in.'
+  : null;
 // Human label like "06:00–10:00, 17:00–22:00" (empty = 24×7).
 const gymHoursLabel = (gym) => {
   const slots = (Array.isArray(gym?.slots) ? gym.slots : []).filter((s) => s.open && s.close);
@@ -498,9 +506,24 @@ exports.getMembers = async (req, res, next) => {
     const { gymId } = req.params;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
-    const memberships = await Membership.find({ gym: gymId })
-      .populate('user', 'name phone email avatar')
-      .sort({ createdAt: -1 });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const filter = { gym: gymId };
+    if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+    // Optional search by member name/phone (match users first, then filter memberships)
+    const q = (req.query.search || '').trim();
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const users = await User.find({ $or: [{ name: rx }, { phone: rx }] }).select('_id');
+      filter.user = { $in: users.map(u => u._id) };
+    }
+
+    const [total, memberships] = await Promise.all([
+      Membership.countDocuments(filter),
+      Membership.find(filter).populate('user', 'name phone email avatar').sort({ createdAt: -1 }).skip(skip).limit(limit),
+    ]);
 
     const now = new Date();
     const data = memberships.map(m => ({
@@ -514,7 +537,23 @@ exports.getMembers = async (req, res, next) => {
       status: m.status,
       isDue: m.dueDate ? new Date(m.dueDate) < now : false,
     }));
-    res.json({ success: true, count: data.length, data });
+    res.json({ success: true, count: data.length, total, page, hasMore: skip + memberships.length < total, data });
+  } catch (e) { next(e); }
+};
+
+// @desc  Owner sets a member's status: active | inactive | blocked | left
+exports.setMemberStatus = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const { status } = req.body;
+    const allowed = ['active', 'inactive', 'blocked', 'left'];
+    if (!allowed.includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    membership.status = status;
+    await membership.save();
+    res.json({ success: true, message: `Member marked ${status}`, data: { _id: membership._id, status } });
   } catch (e) { next(e); }
 };
 
@@ -639,6 +678,9 @@ exports.markAttendance = async (req, res, next) => {
       const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
       announceNewMember(gymId, gym?.name, { id: userId, membershipId: membership._id, name: nu?.name, phone: nu?.phone, avatar: nu?.avatar }, excludeId);
     }
+
+    const blk = memberBlockedMsg(membership);
+    if (blk) return res.status(403).json({ success: false, message: blk });
 
     const day = istDay();
     try {
@@ -858,6 +900,8 @@ exports.selfCheckIn = async (req, res, next) => {
       });
       announceNewMember(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
     }
+    const blk = memberBlockedMsg(membership);
+    if (blk) return res.status(403).json({ success: false, message: blk });
     // Attendance only during gym hours; registration above is allowed any time.
     if (!gymOpenNow(gym)) {
       const lbl = gymHoursLabel(gym);
@@ -1182,6 +1226,7 @@ async function attendUser(gym, user) {
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
     announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
   }
+  if (memberBlockedMsg(membership)) return { blocked: true, blockedMsg: memberBlockedMsg(membership) };
   // Registration above happens any time; attendance is only marked during gym hours.
   if (!gymOpenNow(gym)) return { closed: true };
   const day = istDay();
@@ -1196,6 +1241,7 @@ async function attendUser(gym, user) {
 
 // Success-line for the web check-in page, aware of the "gym closed" case.
 const attendMsg = (gym, r, okMsg) => {
+  if (r.blocked) return r.blockedMsg || 'You cannot check in. Please contact the gym.';
   if (r.closed) {
     const l = gymHoursLabel(gym);
     return `You're registered! ${gym.name} is closed right now${l ? ` (open ${l})` : ''}. Attendance is marked only during gym hours.`;
