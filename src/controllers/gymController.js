@@ -1002,6 +1002,53 @@ const geoLoaderPage = (gym, postUrl, heading, sub) => PAGE_SHELL(`
   })();
   </script>`, gym.gymCode);
 
+// Set-gym-location page for the OWNER: unlike the auto-submit geoLoaderPage, this
+// SHOWS the detected location (coordinates + accuracy + a map) and only saves when
+// the owner taps Confirm — so they can verify they're standing inside the gym.
+const setlocPage = (gym, postUrl) => PAGE_SHELL(`
+  <div class="ok"><div class="big">📍</div>
+    <h1>Set gym location</h1>
+    <p class="muted" id="msg">Stand inside ${esc(gym.name)} and allow location…</p>
+  </div>
+  <div id="result" style="display:none;margin-top:12px">
+    <div style="background:#151725;border:1px solid #363a5c;border-radius:12px;padding:12px;text-align:left">
+      <div style="font-size:12px;color:#9092b0">Detected location</div>
+      <div id="coords" style="font-size:16px;font-weight:700;margin-top:2px"></div>
+      <div id="acc" style="font-size:12px;margin-top:4px"></div>
+    </div>
+    <iframe id="map" style="width:100%;height:210px;border:0;border-radius:12px;margin-top:12px" loading="lazy"></iframe>
+    <button type="button" id="save" style="margin-top:14px">✅ Confirm &amp; save this location</button>
+    <a class="btn" href="" id="refresh" style="background:#222438;border:1px solid #6C63FF;color:#8B85FF;margin-top:10px">🔄 Refresh location</a>
+  </div>
+  <div id="retry" style="display:none;margin-top:18px"><a class="btn" id="retryA" href="">Retry</a></div>
+  <form id="geoForm" method="POST" action="${postUrl}" style="display:none">
+    <input type="hidden" name="lat" id="lat"/><input type="hidden" name="lng" id="lng"/>
+  </form>
+  <script>
+  (function(){
+    var msg=document.getElementById('msg');
+    document.getElementById('refresh').href=location.href;
+    function fail(t){msg.textContent=t;var r=document.getElementById('retry');document.getElementById('retryA').href=location.href;r.style.display='block';}
+    if(!navigator.geolocation){fail('Location not supported on this device.');return;}
+    navigator.geolocation.getCurrentPosition(function(p){
+      var lat=p.coords.latitude, lng=p.coords.longitude, acc=Math.round(p.coords.accuracy||0);
+      document.getElementById('lat').value=lat;
+      document.getElementById('lng').value=lng;
+      document.getElementById('coords').textContent=lat.toFixed(6)+', '+lng.toFixed(6);
+      var accEl=document.getElementById('acc');
+      accEl.textContent='± '+acc+' m accuracy'+(acc>50?' — move for a stronger signal':'');
+      accEl.style.color=acc>50?'#FF9800':'#4CAF50';
+      var d=0.004;
+      document.getElementById('map').src='https://www.openstreetmap.org/export/embed.html?bbox='+(lng-d)+','+(lat-d)+','+(lng+d)+','+(lat+d)+'&layer=mapnik&marker='+lat+','+lng;
+      msg.textContent='This is the location members will check in from. Confirm if correct.';
+      document.getElementById('result').style.display='block';
+    },function(){fail('📍 Please allow location access, then tap Retry.');},{enableHighAccuracy:true,timeout:15000,maximumAge:0});
+    document.getElementById('save').addEventListener('click',function(){
+      this.textContent='Saving…';this.disabled=true;document.getElementById('geoForm').submit();
+    });
+  })();
+  </script>`, gym.gymCode);
+
 const expiredPage = () => PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>QR expired</h1><p class="muted">This check-in QR has expired. Please scan the live QR shown at the gym counter again.</p></div>`);
 
 // Hidden lat/lng inputs to carry the verified location through the next POST
@@ -1160,7 +1207,7 @@ exports.gymSetlocPage = async (req, res) => {
   if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1><p class="muted">Open a fresh "Set gym location" link from the app.</p></div>`));
   const gym = await Gym.findOne({ gymCode: r.gymCode }).select('name gymCode');
   if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid</h1></div>`));
-  res.send(geoLoaderPage(gym, `/g/setloc/${req.params.token}`, 'Set gym location', `Stand inside ${gym.name} and allow location…`));
+  res.send(setlocPage(gym, `/g/setloc/${req.params.token}`));
 };
 
 // @desc  Save the captured gym location
@@ -1170,7 +1217,12 @@ exports.gymSetlocSave = async (req, res) => {
   const lat = parseFloat(req.body.lat), lng = parseFloat(req.body.lng);
   if (isNaN(lat) || isNaN(lng)) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>No location</h1><a class="btn" href="/g/setloc/${req.params.token}">Retry</a></div>`));
   await Gym.findOneAndUpdate({ gymCode: r.gymCode }, { lat, lng });
-  res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Location saved!</h1><p class="muted">Members can now check in only when they're at the gym (within ${GEOFENCE_RADIUS_M}m).</p></div>`));
+  const d = 0.004;
+  const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${lng - d},${lat - d},${lng + d},${lat + d}&layer=mapnik&marker=${lat},${lng}`;
+  res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Location saved!</h1>
+    <p class="muted">${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+    <iframe src="${mapSrc}" style="width:100%;height:200px;border:0;border-radius:12px;margin:12px 0" loading="lazy"></iframe>
+    <p class="muted">Members can now check in only when they're at the gym (within ${GEOFENCE_RADIUS_M}m).</p></div>`, r.gymCode));
 };
 
 // @desc  LIVE scan — opened by scanning the rotating counter QR (encrypted, ~4 min).
