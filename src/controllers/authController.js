@@ -2,6 +2,7 @@ const User = require('../models/User');
 const { sendOtpEmail, sendLoginOtpEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { sendOtpSms } = require('../utils/smsService');
 const { canSendOtp, recordOtpSend } = require('../utils/otpRateLimit');
+const { uploadAvatar } = require('../utils/cloudinary');
 
 // @desc    Register as a gym owner — creates a PENDING request (super-admin approves in panel)
 exports.registerOwner = async (req, res, next) => {
@@ -631,7 +632,10 @@ exports.uploadAvatar = async (req, res, next) => {
     const { avatar } = req.body;
     if (!avatar) return res.status(400).json({ success: false, message: 'Provide avatar data' });
 
-    const user = await User.findByIdAndUpdate(req.user.id, { avatar }, { new: true });
+    // Cloudinary: upload base64 → store URL (falls back to base64 if not configured).
+    const avatarUrl = await uploadAvatar(avatar);
+    // const user = await User.findByIdAndUpdate(req.user.id, { avatar }, { new: true }); // OLD: base64 straight to DB
+    const user = await User.findByIdAndUpdate(req.user.id, { avatar: avatarUrl }, { new: true });
     res.json({ success: true, message: 'Avatar updated', user: { id: user._id, name: user.name, avatar: user.avatar } });
   } catch (error) {
     next(error);

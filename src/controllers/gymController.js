@@ -8,6 +8,7 @@ const GymCashbook = require('../models/GymCashbook');
 const StaffAttendance = require('../models/StaffAttendance');
 const User = require('../models/User');
 const { notifyUsers } = require('../utils/push');
+const { uploadAvatar } = require('../utils/cloudinary');
 
 // ---- helpers ----
 const istDay = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
@@ -65,8 +66,11 @@ const notifyGymTeam = async (gymId, { title, body, type = 'info', data = {}, ima
 // `member` = { id, name, phone, avatar }. The base64 avatar is carried in `data`
 // (for the in-app list) and also served as an image URL for the push thumbnail.
 const announceNewMember = (gymId, gymName, member = {}, excludeUserId) => {
-  const hasPhoto = member.avatar && String(member.avatar).startsWith('data:');
-  const imageUrl = hasPhoto && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined;
+  // Push thumbnail: a Cloudinary URL is used directly; a base64 avatar is served
+  // via /api/gym/avatar/:id (legacy). No photo → no thumbnail.
+  const av = member.avatar ? String(member.avatar) : '';
+  const imageUrl = av.startsWith('http') ? av
+    : (av.startsWith('data:') && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined);
   // membershipId + gymId let the app open the member's detail page on tap.
   return notifyGymTeam(gymId, {
     title: `🆕 New member at ${gymName || 'your gym'}`,
@@ -87,8 +91,11 @@ const announceNewMember = (gymId, gymName, member = {}, excludeUserId) => {
 
 // "Payment received" notification for a gym's team (with member's photo).
 const announcePayment = (gymId, gymName, member = {}, amount, planLabel, excludeUserId) => {
-  const hasPhoto = member.avatar && String(member.avatar).startsWith('data:');
-  const imageUrl = hasPhoto && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined;
+  // Push thumbnail: a Cloudinary URL is used directly; a base64 avatar is served
+  // via /api/gym/avatar/:id (legacy). No photo → no thumbnail.
+  const av = member.avatar ? String(member.avatar) : '';
+  const imageUrl = av.startsWith('http') ? av
+    : (av.startsWith('data:') && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined);
   return notifyGymTeam(gymId, {
     title: `💵 Payment received — ${gymName || 'your gym'}`,
     body: `${member.name || 'A member'} paid ₹${amount}${planLabel ? ` (${planLabel})` : ''}. ✅`,
@@ -190,6 +197,8 @@ exports.addMember = async (req, res, next) => {
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
+    // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
+    const avatarUrl = await uploadAvatar(avatar);
     // Find existing user by phone, else create a lightweight one
     let user = await User.findOne({ phone });
     if (!user) {
@@ -198,10 +207,12 @@ exports.addMember = async (req, res, next) => {
         phone,
         email: `g_${phone}_${Date.now()}@fitai.local`, // placeholder, unique
         role: 'user',
-        avatar: avatar || '',
+        // avatar: avatar || '', // OLD: base64 straight to DB
+        avatar: avatarUrl || '',
       });
     } else if (avatar && !user.avatar) {
-      try { user.avatar = avatar; await user.save(); } catch (e) {}
+      // try { user.avatar = avatar; await user.save(); } catch (e) {} // OLD: base64
+      try { user.avatar = avatarUrl; await user.save(); } catch (e) {}
     }
 
     // Existing membership?
@@ -238,13 +249,16 @@ exports.addStaff = async (req, res, next) => {
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
 
+    // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
+    const avatarUrl = await uploadAvatar(avatar);
     let user = await User.findOne({ phone: cleanPhone });
     if (!user) {
       user = await User.create({
         name: name || 'Staff', phone: cleanPhone,
         email: `s_${cleanPhone}_${Date.now()}@fitai.local`,
         role: 'gym_staff', staffGym: gymId, staffRole, staffSalary: salary,
-        staffJoinDate: new Date(), avatar: avatar || '',
+        // staffJoinDate: new Date(), avatar: avatar || '', // OLD: base64
+        staffJoinDate: new Date(), avatar: avatarUrl || '',
       });
     } else {
       // Don't hijack an owner/admin account
@@ -256,7 +270,8 @@ exports.addStaff = async (req, res, next) => {
       if (name) user.name = name;
       if (staffRole !== undefined) user.staffRole = staffRole;
       if (salary !== undefined) user.staffSalary = salary;
-      if (avatar && !user.avatar) user.avatar = avatar;
+      // if (avatar && !user.avatar) user.avatar = avatar; // OLD: base64
+      if (avatar && !user.avatar) user.avatar = avatarUrl;
       if (!user.staffJoinDate) user.staffJoinDate = new Date();
       await user.save();
     }
@@ -1297,11 +1312,15 @@ exports.gymPublicRegister = async (req, res) => {
 
     const cleanEmail = email && /^\S+@\S+\.\S+$/.test(email) ? email.toLowerCase().trim() : null;
     const avatar = (typeof req.body.avatar === 'string' && req.body.avatar.startsWith('data:image/')) ? req.body.avatar : '';
+    // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
+    const avatarUrl = await uploadAvatar(avatar);
     let user = await User.findOne({ phone }); // double-check (race)
     if (!user) {
-      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user', avatar });
+      // user = await User.create({ ..., avatar }); // OLD: base64
+      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user', avatar: avatarUrl });
     } else if (avatar && !user.avatar) {
-      try { user.avatar = avatar; await user.save(); } catch (e) {}
+      // try { user.avatar = avatar; await user.save(); } catch (e) {} // OLD: base64
+      try { user.avatar = avatarUrl; await user.save(); } catch (e) {}
     }
     const r = await attendUser(gym, user);
     const hist = await attendanceHtml(gym, user);
