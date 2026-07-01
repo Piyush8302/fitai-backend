@@ -12,6 +12,11 @@ const gymSchema = new mongoose.Schema({
   // Optional geofence for self check-in
   lat: { type: Number },
   lng: { type: Number },
+  // Operating hours (IST, "HH:MM"). If both set, self/web check-in attendance is
+  // only marked within this window; registration is still allowed any time.
+  // Empty = open 24h (no restriction).
+  openTime: { type: String, trim: true, default: '' },
+  closeTime: { type: String, trim: true, default: '' },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 

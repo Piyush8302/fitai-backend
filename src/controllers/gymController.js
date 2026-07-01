@@ -12,6 +12,19 @@ const { notifyUsers } = require('../utils/push');
 // ---- helpers ----
 const istDay = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
 
+// Current time in IST as minutes-since-midnight
+const istMinutes = () => { const d = new Date(Date.now() + 5.5 * 3600 * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+// Is the gym open right now? No hours set (or open==close) → always open.
+// Supports overnight windows (e.g. 22:00–06:00).
+const gymOpenNow = (gym) => {
+  const o = hhmmToMin(gym?.openTime), c = hhmmToMin(gym?.closeTime);
+  if (o == null || c == null || o === c) return true;
+  const now = istMinutes();
+  return o < c ? (now >= o && now <= c) : (now >= o || now <= c);
+};
+const gymHoursLabel = (gym) => (gym?.openTime && gym?.closeTime) ? `${gym.openTime}–${gym.closeTime}` : '';
+
 // Public base URL of this backend — used to build avatar image URLs for push.
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://fitai-backend-icbh.onrender.com';
 
@@ -109,8 +122,10 @@ exports.getAvatarImage = async (req, res) => {
 // @desc  Create a gym (becomes a gym_owner)
 exports.createGym = async (req, res, next) => {
   try {
-    const { name, location, city, phone, lat, lng, ownerPhone } = req.body;
+    const { name, location, city, phone, lat, lng, ownerPhone, openTime, closeTime } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Gym name required' });
+    const okTime = (t) => t === undefined || t === '' || /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
+    if (!okTime(openTime) || !okTime(closeTime)) return res.status(400).json({ success: false, message: 'Time must be HH:MM (24-hour)' });
 
     // Only an APPROVED gym owner (or super admin) can create gyms — no direct
     // self-promotion. New owners must register and be approved in the admin panel.
@@ -128,7 +143,7 @@ exports.createGym = async (req, res, next) => {
       await User.findByIdAndUpdate(req.user.id, { phone: op });
     }
 
-    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng });
+    const gym = await Gym.create({ name, owner: req.user.id, location, city, phone, lat, lng, openTime: openTime || '', closeTime: closeTime || '' });
     res.status(201).json({ success: true, data: gym });
   } catch (e) { next(e); }
 };
@@ -747,6 +762,11 @@ exports.selfCheckIn = async (req, res, next) => {
       });
       announceNewMember(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
     }
+    // Attendance only during gym hours; registration above is allowed any time.
+    if (!gymOpenNow(gym)) {
+      const lbl = gymHoursLabel(gym);
+      return res.json({ success: true, data: { gym: gym.name, closed: true }, message: `${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. You're registered — attendance is marked only during gym hours.` });
+    }
     const day = istDay();
     try {
       await GymAttendance.create({
@@ -1019,6 +1039,8 @@ async function attendUser(gym, user) {
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
     announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
   }
+  // Registration above happens any time; attendance is only marked during gym hours.
+  if (!gymOpenNow(gym)) return { closed: true };
   const day = istDay();
   try {
     await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
@@ -1028,6 +1050,15 @@ async function attendUser(gym, user) {
     throw e;
   }
 }
+
+// Success-line for the web check-in page, aware of the "gym closed" case.
+const attendMsg = (gym, r, okMsg) => {
+  if (r.closed) {
+    const l = gymHoursLabel(gym);
+    return `You're registered! ${gym.name} is closed right now${l ? ` (open ${l})` : ''}. Attendance is marked only during gym hours.`;
+  }
+  return r.duplicate ? 'You were already checked in today.' : okMsg;
+};
 
 // @desc  STEP 1 — phone-only page. Registered members just enter their number;
 //        new people are asked for a name on step 2. No cookie needed (works on iPhone).
@@ -1061,7 +1092,7 @@ exports.gymGeoCheckin = async (req, res) => {
       if (user) {
         const r = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
+        return res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
       }
     }
     // No saved phone → ask for number (carry verified lat/lng forward)
@@ -1115,7 +1146,7 @@ exports.gymTokenPage = async (req, res) => {
       if (user) {
         const rr = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(okPage(user.name, gym.name, rr.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
+        return res.send(okPage(user.name, gym.name, attendMsg(gym, rr, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
       }
     }
     // No saved phone → enter number (then /submit checks in)
@@ -1214,7 +1245,7 @@ exports.gymPublicSubmit = async (req, res) => {
       const r = await attendUser(gym, user);
       const hist = await attendanceHtml(gym, user);
       res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-      return res.send(okPage(user.name, gym.name, r.duplicate ? 'You were already checked in today.' : 'Attendance marked. Have a great workout! 💪', gym.gymCode, hist));
+      return res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
     }
 
     // New person → ask for name + photo (email optional), phone + location carried hidden
@@ -1247,7 +1278,7 @@ exports.gymPublicRegister = async (req, res) => {
     const r = await attendUser(gym, user);
     const hist = await attendanceHtml(gym, user);
     res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-    res.send(okPage(user.name, gym.name, r.duplicate ? 'Already checked in today.' : 'Registered & attendance marked! Pay your fee at the counter.', gym.gymCode, hist));
+    res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Registered & attendance marked! Pay your fee at the counter.'), gym.gymCode, hist));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
@@ -1261,7 +1292,7 @@ exports.webCheckIn = async (req, res, next) => {
     let user = await User.findOne({ phone });
     if (!user) user = await User.create({ name: req.body.name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
     const r = await attendUser(gym, user);
-    res.json({ success: true, message: `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate });
+    res.json({ success: true, message: r.closed ? `Registered! ${gym.name} is closed now — attendance is marked only during gym hours.` : `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate, closed: !!r.closed });
   } catch (e) { next(e); }
 };
 
