@@ -67,6 +67,12 @@ const userSchema = new mongoose.Schema({
   staffJoinDate: { type: Date },             // when added as staff
   canAccessCashbook: { type: Boolean, default: false }, // owner can grant a staff cashbook access
   canAccessReports: { type: Boolean, default: false },  // owner can grant a staff reports access
+  // Per-staff action rights (owner grants). Delete stays owner-only (not here).
+  canAddMember: { type: Boolean, default: false },
+  canMarkPayment: { type: Boolean, default: false },
+  canMarkPresent: { type: Boolean, default: false },   // mark member attendance / present
+  canManageStatus: { type: Boolean, default: false },  // mark left / block / deactivate
+  canEditGym: { type: Boolean, default: false },
 }, { timestamps: true });
 
 // Hash password

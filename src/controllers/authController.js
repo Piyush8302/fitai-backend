@@ -212,7 +212,7 @@ exports.verifyOtp = async (req, res, next) => {
     await user.save();
 
     const token = user.getSignedToken();
-    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete, role: user.role, canAccessCashbook: user.canAccessCashbook, canAccessReports: user.canAccessReports } });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, isProfileComplete: user.isProfileComplete, role: user.role, canAccessCashbook: user.canAccessCashbook, canAccessReports: user.canAccessReports, canAddMember: user.canAddMember, canMarkPayment: user.canMarkPayment, canMarkPresent: user.canMarkPresent, canManageStatus: user.canManageStatus, canEditGym: user.canEditGym } });
   } catch (error) {
     next(error);
   }

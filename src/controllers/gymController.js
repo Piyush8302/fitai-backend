@@ -176,6 +176,11 @@ const ownsGym = async (user, gymId) => {
   return ids.includes(String(gymId));
 };
 
+// Action rights: owner/admin can do everything; a gym_staff needs the specific
+// permission granted by the owner (e.g. 'canAddMember').
+const staffCan = (user, flag) => user.role !== 'gym_staff' || !!user[flag];
+const denyStaff = (res, action) => res.status(403).json({ success: false, message: `You don't have permission to ${action}. Ask the gym owner.` });
+
 // @desc  Serve a user's avatar as a real image (so push thumbnails can use a URL).
 //        Public — Expo fetches it from the device with no auth header.
 exports.getAvatarImage = async (req, res) => {
@@ -234,6 +239,7 @@ exports.updateGym = async (req, res, next) => {
   try {
     const { gymId } = req.params;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canEditGym')) return denyStaff(res, 'edit the gym');
     const gym = await Gym.findById(gymId);
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
 
@@ -277,6 +283,7 @@ exports.addMember = async (req, res, next) => {
     const { gymId, name, phone, plan = 'monthly', fee = 0, avatar } = req.body;
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canAddMember')) return denyStaff(res, 'add members');
 
     // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
     const avatarUrl = await uploadAvatar(avatar);
@@ -370,7 +377,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook canAccessReports').sort({ createdAt: -1 });
+      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -384,6 +391,11 @@ exports.getStaff = async (req, res, next) => {
         staffRole: s.staffRole, staffSalary: s.staffSalary, staffJoinDate: s.staffJoinDate,
         canAccessCashbook: !!s.canAccessCashbook,
         canAccessReports: !!s.canAccessReports,
+        canAddMember: !!s.canAddMember,
+        canMarkPayment: !!s.canMarkPayment,
+        canMarkPresent: !!s.canMarkPresent,
+        canManageStatus: !!s.canManageStatus,
+        canEditGym: !!s.canEditGym,
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
     }));
@@ -395,7 +407,7 @@ exports.getStaff = async (req, res, next) => {
 exports.updateStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;
-    const { name, staffRole, salary, gymId, canAccessCashbook, canAccessReports } = req.body;
+    const { name, staffRole, salary, gymId } = req.body;
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
     if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your staff' });
@@ -403,15 +415,18 @@ exports.updateStaff = async (req, res, next) => {
     if (name !== undefined && name.trim()) staff.name = name.trim();
     if (staffRole !== undefined) staff.staffRole = staffRole;
     if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
-    if (canAccessCashbook !== undefined) staff.canAccessCashbook = !!canAccessCashbook;
-    if (canAccessReports !== undefined) staff.canAccessReports = !!canAccessReports;
+    // Owner-grantable permissions
+    const PERMS = ['canAccessCashbook', 'canAccessReports', 'canAddMember', 'canMarkPayment', 'canMarkPresent', 'canManageStatus', 'canEditGym'];
+    PERMS.forEach((k) => { if (req.body[k] !== undefined) staff[k] = !!req.body[k]; });
     // Reassign to another gym the owner owns
     if (gymId && String(gymId) !== String(staff.staffGym)) {
       if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
       staff.staffGym = gymId;
     }
     await staff.save();
-    res.json({ success: true, data: { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, canAccessCashbook: staff.canAccessCashbook, canAccessReports: staff.canAccessReports } });
+    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym };
+    PERMS.forEach((k) => { out[k] = !!staff[k]; });
+    res.json({ success: true, data: out });
   } catch (e) { next(e); }
 };
 
@@ -571,6 +586,7 @@ exports.setMemberStatus = async (req, res, next) => {
     const membership = await Membership.findById(membershipId);
     if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canManageStatus')) return denyStaff(res, 'change member status');
     membership.status = status;
     await membership.save();
 
@@ -647,6 +663,7 @@ exports.markPayment = async (req, res, next) => {
     const membership = await Membership.findById(membershipId);
     if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canMarkPayment')) return denyStaff(res, 'mark payments');
 
     const months = periodMonths || PLAN_MONTHS[plan || membership.plan] || 1;
     const payment = await GymPayment.create({
@@ -692,7 +709,25 @@ exports.deleteMember = async (req, res, next) => {
     const membership = await Membership.findById(membershipId);
     if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    // Grab details before deleting so we can notify the team.
+    const [gym, u] = await Promise.all([
+      Gym.findById(membership.gym).select('name'),
+      User.findById(membership.user).select('name phone avatar'),
+    ]);
+    const gymId = membership.gym;
     await membership.deleteOne();
+    // Notify owner + all staff that a member was removed (delete is owner-only).
+    try {
+      const av = u?.avatar ? String(u.avatar) : '';
+      const imageUrl = av.startsWith('http') ? av : (av.startsWith('data:') ? `${PUBLIC_BASE_URL}/api/gym/avatar/${membership.user}` : undefined);
+      notifyGymTeam(gymId, {
+        title: `🗑️ Member removed — ${gym?.name || 'your gym'}`,
+        body: `${u?.name || 'A member'}${u?.phone ? ` (${u.phone})` : ''} was removed from the gym.`,
+        type: 'warning',
+        data: { kind: 'member_removed', gym: gym?.name, memberName: u?.name, avatar: u?.avatar || undefined },
+        imageUrl,
+      });
+    } catch (e) { console.log('delete notify error:', e.message); }
     res.json({ success: true, message: 'Member removed' });
   } catch (e) { next(e); }
 };
@@ -703,6 +738,7 @@ exports.markAttendance = async (req, res, next) => {
     const { gymId, userId } = req.body;
     if (!gymId || !userId) return res.status(400).json({ success: false, message: 'gymId and userId required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canMarkPresent')) return denyStaff(res, 'mark attendance');
 
     // Open model: if not a member yet, auto-create a trial membership
     let membership = await Membership.findOne({ user: userId, gym: gymId });

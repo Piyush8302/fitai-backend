@@ -12,7 +12,7 @@ router.use(protect);
 
 // ---- Owner / Staff ----
 router.post('/', ownerOnly, c.createGym);            // create gym (owner only)
-router.put('/:gymId', ownerOnly, c.updateGym);       // edit gym (owner only)
+router.put('/:gymId', c.updateGym);                  // edit gym (owner, or staff with canEditGym)
 router.get('/mine', c.getMyGyms);                    // my gyms
 // All-branches combined (must be BEFORE /:gymId/* so "all" isn't read as a gymId)
 router.get('/all/members', c.getAllMembers);
@@ -31,7 +31,7 @@ router.get('/:gymId/staff/:staffId/attendance', c.getStaffAttendance); // staff 
 router.get('/:gymId/members', c.getMembers);         // gym members
 router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member detail
 router.delete('/member/:membershipId', ownerOnly, c.deleteMember); // remove a member (owner only — staff blocked)
-router.put('/member/:membershipId/status', ownerOnly, c.setMemberStatus); // active|inactive|blocked|left
+router.put('/member/:membershipId/status', c.setMemberStatus); // owner, or staff with canManageStatus
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
