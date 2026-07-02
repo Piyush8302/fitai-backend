@@ -138,6 +138,22 @@ const announcePayment = (gymId, gymName, member = {}, amount, planLabel, exclude
   });
 };
 
+// "Member checked in" notification for the gym team (once per member per day).
+const announceCheckin = (gymId, gymName, member = {}, method, excludeUserId) => {
+  const av = member.avatar ? String(member.avatar) : '';
+  const imageUrl = av.startsWith('http') ? av
+    : (av.startsWith('data:') && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined);
+  const via = method === 'staff_scan' ? ' (staff scan)' : method === 'self_scan' ? '' : '';
+  return notifyGymTeam(gymId, {
+    title: `✅ Check-in — ${gymName || 'your gym'}`,
+    body: `${member.name || 'A member'} just checked in${via}.`,
+    type: 'info',
+    data: { kind: 'checkin', screen: 'GymMemberDetail', gymId: String(gymId), membershipId: member.membershipId ? String(member.membershipId) : undefined, memberId: member.id ? String(member.id) : undefined, memberName: member.name, avatar: member.avatar || undefined },
+    imageUrl,
+    excludeUserId,
+  });
+};
+
 const PLAN_MONTHS = { trial: 0, day_pass: 0, monthly: 1, quarterly: 3, half_yearly: 6, yearly: 12 };
 
 const addMonths = (date, months) => {
@@ -713,7 +729,11 @@ exports.markAttendance = async (req, res, next) => {
         user: userId, gym: gymId, membership: membership._id,
         day, method: 'staff_scan', markedBy: req.user.id,
       });
-      const u = await User.findById(userId).select('name phone');
+      const u = await User.findById(userId).select('name phone avatar');
+      // Notify the team (owner always; skip the staff who scanned it themselves).
+      const excludeChk = req.user.role === 'gym_staff' ? req.user.id : undefined;
+      const g2 = await Gym.findById(gymId).select('name');
+      announceCheckin(gymId, g2?.name, { id: userId, membershipId: membership._id, name: u?.name, avatar: u?.avatar }, 'staff_scan', excludeChk);
       return res.status(201).json({ success: true, message: 'Attendance marked', data: { att, member: u, newMember: membership.plan === 'trial' && !membership.lastPaidDate } });
     } catch (dupErr) {
       if (dupErr.code === 11000) {
@@ -937,6 +957,8 @@ exports.selfCheckIn = async (req, res, next) => {
       await GymAttendance.create({
         user: req.user.id, gym: gym._id, membership: membership._id, day, method: 'self_scan',
       });
+      // Member self-scanned → notify the whole team (owner + staff).
+      announceCheckin(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, avatar: req.user.avatar }, 'self_scan', req.user.id);
       return res.status(201).json({ success: true, message: `Checked in at ${gym.name}`, data: { gym: gym.name } });
     } catch (dupErr) {
       if (dupErr.code === 11000) return res.json({ success: true, message: `Already checked in at ${gym.name} today`, data: { gym: gym.name, duplicate: true } });
@@ -1257,6 +1279,8 @@ async function attendUser(gym, user) {
   const day = istDay();
   try {
     await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
+    // Notify the gym team on this check-in (owner + staff).
+    announceCheckin(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, avatar: user.avatar }, 'self_scan');
     return { duplicate: false };
   } catch (e) {
     if (e.code === 11000) return { duplicate: true };
