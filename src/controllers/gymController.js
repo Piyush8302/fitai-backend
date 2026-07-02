@@ -993,7 +993,9 @@ exports.selfCheckIn = async (req, res, next) => {
 
     // Open model: auto-create membership if none
     let membership = await Membership.findOne({ user: req.user.id, gym: gym._id });
+    let isNew = false;
     if (!membership) {
+      isNew = true;
       membership = await Membership.create({
         user: req.user.id, gym: gym._id, plan: 'trial', fee: 0,
         joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
@@ -1005,7 +1007,10 @@ exports.selfCheckIn = async (req, res, next) => {
     // Attendance only during gym hours; registration above is allowed any time.
     if (!gymOpenNow(gym)) {
       const lbl = gymHoursLabel(gym);
-      return res.json({ success: true, data: { gym: gym.name, closed: true }, message: `${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. You're registered — attendance is marked only during gym hours.` });
+      const msg = isNew
+        ? `You're registered! ${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. Attendance is marked only during gym hours.`
+        : `${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. Attendance can be marked only during gym hours.`;
+      return res.json({ success: true, data: { gym: gym.name, closed: true }, message: msg });
     }
     const day = istDay();
     try {
@@ -1324,13 +1329,15 @@ const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
 // Existing user → ensure membership (trial) + mark today's attendance
 async function attendUser(gym, user) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
+  let isNew = false;
   if (!membership) {
+    isNew = true;
     membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
     announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
   }
   if (memberBlockedMsg(membership)) return { blocked: true, blockedMsg: memberBlockedMsg(membership) };
   // Registration above happens any time; attendance is only marked during gym hours.
-  if (!gymOpenNow(gym)) return { closed: true };
+  if (!gymOpenNow(gym)) return { closed: true, isNew };
   const day = istDay();
   try {
     await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
@@ -1348,7 +1355,9 @@ const attendMsg = (gym, r, okMsg) => {
   if (r.blocked) return r.blockedMsg || 'You cannot check in. Please contact the gym.';
   if (r.closed) {
     const l = gymHoursLabel(gym);
-    return `You're registered! ${gym.name} is closed right now${l ? ` (open ${l})` : ''}. Attendance is marked only during gym hours.`;
+    return r.isNew
+      ? `You're registered! ${gym.name} is closed right now${l ? ` (open ${l})` : ''}. Attendance is marked only during gym hours.`
+      : `${gym.name} is closed right now${l ? ` (open ${l})` : ''}. Attendance can be marked only during gym hours.`;
   }
   return r.duplicate ? 'You were already checked in today.' : okMsg;
 };
@@ -1419,6 +1428,17 @@ exports.gymSetlocSave = async (req, res) => {
   if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1></div>`));
   const lat = parseFloat(req.body.lat), lng = parseFloat(req.body.lng);
   if (isNaN(lat) || isNaN(lng)) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>No location</h1><a class="btn" href="/g/setloc/${req.params.token}">Retry</a></div>`));
+  const gymDoc = await Gym.findOne({ gymCode: r.gymCode }).select('owner name');
+  if (!gymDoc) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid</h1></div>`));
+  // Each gym needs its OWN location — block setting a spot already used by another
+  // of the owner's gyms (e.g. owner setting both branches from the same place).
+  const others = await Gym.find({ owner: gymDoc.owner, _id: { $ne: gymDoc._id } }).select('name lat lng');
+  const clash = others.find(o => o.lat != null && o.lng != null && distanceMeters(lat, lng, o.lat, o.lng) < 40);
+  if (clash) {
+    return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Location clash</h1>
+      <p class="muted">This spot is already the location of <b>${esc(clash.name)}</b>. Each gym must have its own location — open this "Set gym location" link while standing <b>inside ${esc(gymDoc.name)}</b>.</p>
+      <a class="btn" href="/g/setloc/${req.params.token}">Retry from the gym</a></div>`, r.gymCode));
+  }
   await Gym.findOneAndUpdate({ gymCode: r.gymCode }, { lat, lng });
   const d = 0.004;
   const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${lng - d},${lat - d},${lng + d},${lat + d}&layer=mapnik&marker=${lat},${lng}`;
@@ -1594,7 +1614,7 @@ exports.webCheckIn = async (req, res, next) => {
     let user = await User.findOne({ phone });
     if (!user) user = await User.create({ name: req.body.name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
     const r = await attendUser(gym, user);
-    res.json({ success: true, message: r.closed ? `Registered! ${gym.name} is closed now — attendance is marked only during gym hours.` : `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate, closed: !!r.closed });
+    res.json({ success: true, message: r.closed ? `${r.isNew ? 'Registered! ' : ''}${gym.name} is closed now — attendance is marked only during gym hours.` : `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate, closed: !!r.closed });
   } catch (e) { next(e); }
 };
 
