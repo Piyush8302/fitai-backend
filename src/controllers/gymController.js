@@ -557,6 +557,27 @@ exports.setMemberStatus = async (req, res, next) => {
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
     membership.status = status;
     await membership.save();
+
+    // Notify the whole gym team (owner + all staff) about the status change.
+    try {
+      const [gym, u] = await Promise.all([
+        Gym.findById(membership.gym).select('name'),
+        User.findById(membership.user).select('name phone avatar'),
+      ]);
+      const LBL = { active: 'reactivated ✅', inactive: 'deactivated ⏸️', blocked: 'blocked 🚫', left: 'marked as left 🚪' };
+      const label = LBL[status] || status;
+      const av = u?.avatar ? String(u.avatar) : '';
+      const imageUrl = av.startsWith('http') ? av
+        : (av.startsWith('data:') ? `${PUBLIC_BASE_URL}/api/gym/avatar/${membership.user}` : undefined);
+      notifyGymTeam(membership.gym, {
+        title: `Member ${label} — ${gym?.name || 'your gym'}`,
+        body: `${u?.name || 'A member'}${u?.phone ? ` (${u.phone})` : ''} was ${label}.`,
+        type: status === 'blocked' ? 'warning' : status === 'active' ? 'success' : 'info',
+        data: { kind: 'member_status', screen: 'GymMemberDetail', gymId: String(membership.gym), membershipId: String(membership._id), memberId: String(membership.user), memberName: u?.name, avatar: u?.avatar || undefined, status },
+        imageUrl,
+      });
+    } catch (e) { console.log('status notify error:', e.message); }
+
     res.json({ success: true, message: `Member marked ${status}`, data: { _id: membership._id, status } });
   } catch (e) { next(e); }
 };
