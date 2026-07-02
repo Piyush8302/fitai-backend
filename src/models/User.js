@@ -73,6 +73,8 @@ const userSchema = new mongoose.Schema({
   canMarkPresent: { type: Boolean, default: false },   // mark member attendance / present
   canManageStatus: { type: Boolean, default: false },  // mark left / block / deactivate
   canEditGym: { type: Boolean, default: false },
+  // Staff account status (owner-managed). Non-active staff can't perform gym actions.
+  staffStatus: { type: String, enum: ['active', 'inactive', 'blocked', 'left'], default: 'active' },
 }, { timestamps: true });
 
 // Hash password

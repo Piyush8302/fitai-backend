@@ -177,8 +177,12 @@ const ownsGym = async (user, gymId) => {
 };
 
 // Action rights: owner/admin can do everything; a gym_staff needs the specific
-// permission granted by the owner (e.g. 'canAddMember').
-const staffCan = (user, flag) => user.role !== 'gym_staff' || !!user[flag];
+// permission granted by the owner — and must be an active staff account.
+const staffCan = (user, flag) => {
+  if (user.role !== 'gym_staff') return true;
+  if (user.staffStatus && user.staffStatus !== 'active') return false; // blocked/inactive/left
+  return !!user[flag];
+};
 const denyStaff = (res, action) => res.status(403).json({ success: false, message: `You don't have permission to ${action}. Ask the gym owner.` });
 
 // @desc  Serve a user's avatar as a real image (so push thumbnails can use a URL).
@@ -377,7 +381,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym').sort({ createdAt: -1 });
+      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -396,6 +400,7 @@ exports.getStaff = async (req, res, next) => {
         canMarkPresent: !!s.canMarkPresent,
         canManageStatus: !!s.canManageStatus,
         canEditGym: !!s.canEditGym,
+        staffStatus: s.staffStatus || 'active',
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
     }));
@@ -418,13 +423,20 @@ exports.updateStaff = async (req, res, next) => {
     // Owner-grantable permissions
     const PERMS = ['canAccessCashbook', 'canAccessReports', 'canAddMember', 'canMarkPayment', 'canMarkPresent', 'canManageStatus', 'canEditGym'];
     PERMS.forEach((k) => { if (req.body[k] !== undefined) staff[k] = !!req.body[k]; });
+    // Staff account status (active/inactive/blocked/left)
+    if (req.body.staffStatus !== undefined) {
+      if (!['active', 'inactive', 'blocked', 'left'].includes(req.body.staffStatus)) {
+        return res.status(400).json({ success: false, message: 'Invalid staff status' });
+      }
+      staff.staffStatus = req.body.staffStatus;
+    }
     // Reassign to another gym the owner owns
     if (gymId && String(gymId) !== String(staff.staffGym)) {
       if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
       staff.staffGym = gymId;
     }
     await staff.save();
-    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym };
+    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, staffStatus: staff.staffStatus };
     PERMS.forEach((k) => { out[k] = !!staff[k]; });
     res.json({ success: true, data: out });
   } catch (e) { next(e); }
@@ -758,6 +770,13 @@ exports.markAttendance = async (req, res, next) => {
 
     const blk = memberBlockedMsg(membership);
     if (blk) return res.status(403).json({ success: false, message: blk });
+
+    // Attendance only during gym hours (member already registered above).
+    const gymFull = await Gym.findById(gymId).select('name slots openTime closeTime');
+    if (!gymOpenNow(gymFull)) {
+      const lbl = gymHoursLabel(gymFull);
+      return res.status(403).json({ success: false, message: `${gymFull?.name || 'Gym'} is closed right now${lbl ? ` (open ${lbl})` : ''}. Attendance can be marked only during gym hours.` });
+    }
 
     const day = istDay();
     try {
