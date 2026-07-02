@@ -221,24 +221,28 @@ exports.updateGym = async (req, res, next) => {
     const gym = await Gym.findById(gymId);
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
 
+    // Build a $set update — replacing the slots array via $set is the reliable way
+    // to persist a full multi-slot array (avoids subdocument-array save quirks that
+    // could drop all-but-one slot).
     const { name, location, city, phone, slots, planPrices } = req.body;
+    const update = {};
     if (name !== undefined) {
       if (!String(name).trim()) return res.status(400).json({ success: false, message: 'Gym name cannot be empty' });
-      gym.name = String(name).trim();
+      update.name = String(name).trim();
     }
-    if (location !== undefined) gym.location = String(location).trim();
-    if (city !== undefined) gym.city = String(city).trim();
-    if (phone !== undefined) gym.phone = String(phone).trim();
+    if (location !== undefined) update.location = String(location).trim();
+    if (city !== undefined) update.city = String(city).trim();
+    if (phone !== undefined) update.phone = String(phone).trim();
     if (slots !== undefined) {
-      try { gym.slots = sanitizeSlots(slots); }
+      try { update.slots = sanitizeSlots(slots); }
       catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
     if (planPrices !== undefined) {
       const clean = sanitizePrices(planPrices);
-      Object.keys(clean).forEach((k) => { gym.planPrices[k] = clean[k]; });
+      Object.keys(clean).forEach((k) => { update[`planPrices.${k}`] = clean[k]; });
     }
-    await gym.save();
-    res.json({ success: true, data: gym });
+    const updated = await Gym.findByIdAndUpdate(gymId, { $set: update }, { new: true, runValidators: true });
+    res.json({ success: true, data: updated });
   } catch (e) { next(e); }
 };
 
@@ -1058,7 +1062,7 @@ const mintSetlocToken = (gymCode) => mintToken(gymCode, 'l', SETLOC_TTL_MS);
 const readSetlocToken = (token) => readToken(token, 'l');
 
 // ===== GEOFENCE (static QR + GPS check so people can't check in from home) =====
-const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M) || 200;
+const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M) || 100;
 function distanceMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000, toRad = (d) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
