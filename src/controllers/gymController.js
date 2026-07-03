@@ -973,6 +973,9 @@ exports.getMonthlyReport = async (req, res, next) => {
         paid,
         isDue: m.dueDate ? new Date(m.dueDate) < new Date() : false,
         dueDate: m.dueDate,
+        joinDate: m.joinDate,          // date of joining
+        lastPaidDate: m.lastPaidDate,  // date of last payment
+        status: m.status || 'active',  // active / inactive / blocked / left
       };
     }));
 
@@ -981,6 +984,7 @@ exports.getMonthlyReport = async (req, res, next) => {
       totalPresent: rows.reduce((s, r) => s + r.present, 0),
       totalCollected: rows.reduce((s, r) => s + r.paid, 0),
       totalDue: rows.filter(r => r.isDue).length,
+      pendingAmount: rows.filter(r => r.isDue).reduce((s, r) => s + (r.fee || 0), 0),
     };
     res.json({ success: true, data: { gym: { name: gym?.name, location: gym?.location }, month: label, rows, totals } });
   } catch (e) { next(e); }
