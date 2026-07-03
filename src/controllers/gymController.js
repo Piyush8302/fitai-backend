@@ -1166,8 +1166,19 @@ const getCookie = (req, name) => {
   return m ? decodeURIComponent(m[1]) : null;
 };
 
-const okPage = (name, gymName, sub, gymCode, extra = '') =>
-  PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Welcome ${esc(name)}!</h1><p class="muted">${esc(gymName)}<br/>${sub}</p></div>${extra}`, gymCode);
+const okPage = (name, gymName, sub, gymCode, extra = '', icon = '✅', title = null) =>
+  PAGE_SHELL(`<div class="ok"><div class="big">${icon}</div><h1>${title || `Welcome ${esc(name)}!`}</h1><p class="muted">${esc(gymName)}<br/>${sub}</p></div>${extra}`, gymCode);
+
+// Result page for a check-in attempt: a clear CROSS + "Attendance not marked"
+// when it didn't count (outside gym hours / blocked), so users don't have to
+// read the message to know — the tick only shows when attendance was marked.
+const attendPage = (gym, r, user, okMsg, hist = '') => {
+  const icon = (r.blocked || r.closed) ? '❌' : '✅';
+  const title = r.blocked ? 'Cannot check in'
+    : r.closed ? 'Attendance NOT marked'
+    : `Welcome ${esc(user.name)}!`;
+  return okPage(user.name, gym.name, attendMsg(gym, r, okMsg), gym.gymCode, hist, icon, title);
+};
 
 // Build a small "my recent attendance" block (this-month count + recent check-ins)
 async function attendanceHtml(gym, user) {
@@ -1481,7 +1492,7 @@ exports.gymGeoCheckin = async (req, res) => {
       if (user) {
         const r = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
+        return res.send(attendPage(gym, r, user, 'Attendance marked. Have a great workout! 💪', hist));
       }
     }
     // No saved phone → ask for number (carry verified lat/lng forward)
@@ -1551,7 +1562,7 @@ exports.gymTokenPage = async (req, res) => {
       if (user) {
         const rr = await attendUser(gym, user);
         const hist = await attendanceHtml(gym, user);
-        return res.send(okPage(user.name, gym.name, attendMsg(gym, rr, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
+        return res.send(attendPage(gym, rr, user, 'Attendance marked. Have a great workout! 💪', hist));
       }
     }
     // No saved phone → enter number (then /submit checks in)
@@ -1650,7 +1661,7 @@ exports.gymPublicSubmit = async (req, res) => {
       const r = await attendUser(gym, user);
       const hist = await attendanceHtml(gym, user);
       res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-      return res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Attendance marked. Have a great workout! 💪'), gym.gymCode, hist));
+      return res.send(attendPage(gym, r, user, 'Attendance marked. Have a great workout! 💪', hist));
     }
 
     // New person → ask for name + photo (email optional), phone + location carried hidden
@@ -1687,7 +1698,7 @@ exports.gymPublicRegister = async (req, res) => {
     const r = await attendUser(gym, user);
     const hist = await attendanceHtml(gym, user);
     res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-    res.send(okPage(user.name, gym.name, attendMsg(gym, r, 'Registered & attendance marked! Pay your fee at the counter.'), gym.gymCode, hist));
+    res.send(attendPage(gym, r, user, 'Registered & attendance marked! Pay your fee at the counter.', hist));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
