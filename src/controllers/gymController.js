@@ -800,6 +800,55 @@ exports.markAttendance = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Fee-due dashboard: summary buckets + a filterable member list.
+exports.getGymFees = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    const memberships = await Membership.find({ gym: gymId, status: { $in: ['active', 'expired', 'frozen'] } })
+      .populate('user', 'name phone avatar').sort({ dueDate: 1 });
+
+    // IST-aware day math
+    const istMidnight = (d) => { const x = new Date(new Date(d).getTime() + 5.5 * 3600 * 1000); return Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()); };
+    const today0 = istMidnight(new Date());
+    const dayDiff = (due) => Math.round((istMidnight(due) - today0) / 86400000); // <0 overdue, 0 today, >0 future
+
+    const members = memberships.map((m) => {
+      const fee = m.fee || 0;
+      let bucket = 'ok', diff = null;
+      if (m.dueDate) {
+        diff = dayDiff(m.dueDate);
+        bucket = diff < 0 ? 'overdue' : diff === 0 ? 'today' : diff <= 7 ? 'upcoming' : 'ok';
+      }
+      return {
+        _id: m._id, user: m.user, plan: m.plan, fee,
+        dueDate: m.dueDate, lastPaidDate: m.lastPaidDate, status: m.status,
+        bucket, daysDiff: diff,
+        pending: (bucket === 'overdue' || bucket === 'today') ? fee : 0,
+      };
+    });
+
+    const by = (b) => members.filter((m) => m.bucket === b);
+    const overdue = by('overdue'), today = by('today'), upcoming = by('upcoming');
+    const due = [...overdue, ...today];
+    const sumPending = (arr) => arr.reduce((s, m) => s + (m.fee || 0), 0);
+
+    const summary = {
+      activeMembers: members.length,
+      dueMembers: due.length,
+      dueToday: today.length,
+      upcoming: upcoming.length,
+      overdue: overdue.length,
+      totalPending: sumPending(due),
+      dueTodayAmount: sumPending(today),
+      overdueAmount: sumPending(overdue),
+      upcomingAmount: sumPending(upcoming),
+    };
+    res.json({ success: true, summary, data: members });
+  } catch (e) { next(e); }
+};
+
 // @desc  Gym dashboard stats
 exports.getGymDashboard = async (req, res, next) => {
   try {

@@ -35,6 +35,7 @@ router.put('/member/:membershipId/status', c.setMemberStatus); // owner, or staf
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
+router.get('/:gymId/fees', c.getGymFees);            // fee-due dashboard + filterable list
 router.get('/:gymId/checkin-token', c.getCheckinToken); // fresh time-limited wall-QR token
 router.get('/:gymId/kiosk-link', c.getKioskLink);    // long-lived counter-display link
 router.get('/:gymId/setloc-link', c.getSetlocLink);  // owner sets gym GPS for geofencing
