@@ -381,7 +381,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym').sort({ createdAt: -1 });
+      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym canSetLocation').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -400,6 +400,7 @@ exports.getStaff = async (req, res, next) => {
         canMarkPresent: !!s.canMarkPresent,
         canManageStatus: !!s.canManageStatus,
         canEditGym: !!s.canEditGym,
+        canSetLocation: !!s.canSetLocation,
         staffStatus: s.staffStatus || 'active',
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
@@ -421,7 +422,7 @@ exports.updateStaff = async (req, res, next) => {
     if (staffRole !== undefined) staff.staffRole = staffRole;
     if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
     // Owner-grantable permissions
-    const PERMS = ['canAccessCashbook', 'canAccessReports', 'canAddMember', 'canMarkPayment', 'canMarkPresent', 'canManageStatus', 'canEditGym'];
+    const PERMS = ['canAccessCashbook', 'canAccessReports', 'canAddMember', 'canMarkPayment', 'canMarkPresent', 'canManageStatus', 'canEditGym', 'canSetLocation'];
     PERMS.forEach((k) => { if (req.body[k] !== undefined) staff[k] = !!req.body[k]; });
     // Staff account status (active/inactive/blocked/left)
     if (req.body.staffStatus !== undefined) {
@@ -1500,50 +1501,43 @@ exports.gymGeoCheckin = async (req, res) => {
   } catch (e) { res.status(500).send('Error'); }
 };
 
-// @desc  Owner gets a one-time link to set the gym's GPS location (opened at the gym)
-exports.getSetlocLink = async (req, res, next) => {
+// @desc  Set the gym's GPS location from INSIDE the app (authenticated).
+//        Owner always; a staff only if the owner granted canSetLocation.
+//        Replaces the public web setloc page, which was a hole — anyone holding
+//        the link could set the gym's location without logging in.
+exports.setGymLocation = async (req, res, next) => {
   try {
     const { gymId } = req.params;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
-    const gym = await Gym.findById(gymId).select('gymCode lat lng');
+    if (!staffCan(req.user, 'canSetLocation')) return denyStaff(res, 'set the gym location');
+    const gym = await Gym.findById(gymId).select('owner name');
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
-    res.json({ success: true, data: { url: `${PUBLIC_BASE_URL}/g/setloc/${mintSetlocToken(gym.gymCode)}`, hasLocation: gym.lat != null && gym.lng != null } });
+
+    const lat = parseFloat(req.body.lat), lng = parseFloat(req.body.lng);
+    if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ success: false, message: 'Location required — allow location access and try again.' });
+
+    // Each gym needs its OWN spot — block a location already used by another of
+    // the owner's gyms (e.g. setting both branches from the same place).
+    const others = await Gym.find({ owner: gym.owner, _id: { $ne: gym._id } }).select('name lat lng');
+    const clash = others.find(o => o.lat != null && o.lng != null && distanceMeters(lat, lng, o.lat, o.lng) < 40);
+    if (clash) {
+      return res.status(409).json({ success: false, message: `This spot is already the location of "${clash.name}". Stand inside ${gym.name} and try again — each gym needs its own location.` });
+    }
+
+    await Gym.findByIdAndUpdate(gymId, { lat, lng });
+    res.json({ success: true, message: `Location saved! Members can now check in within ${GEOFENCE_RADIUS_M}m of ${gym.name}.`, data: { lat, lng, radius: GEOFENCE_RADIUS_M } });
   } catch (e) { next(e); }
 };
 
-// @desc  Set-location capture page (grabs the owner's GPS while standing at the gym)
-exports.gymSetlocPage = async (req, res) => {
-  const r = readSetlocToken(req.params.token);
-  if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1><p class="muted">Open a fresh "Set gym location" link from the app.</p></div>`));
-  const gym = await Gym.findOne({ gymCode: r.gymCode }).select('name gymCode');
-  if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid</h1></div>`));
-  res.send(setlocPage(gym, `/g/setloc/${req.params.token}`));
+// @desc  DISABLED — location can no longer be set via a web link (security).
+exports.getSetlocLink = async (req, res) => {
+  res.status(410).json({ success: false, message: 'Setting the location by web link is disabled. Update the app and use "Set gym location" — it saves directly from your phone.' });
 };
-
-// @desc  Save the captured gym location
+exports.gymSetlocPage = async (req, res) => {
+  res.send(PAGE_SHELL(`<div class="ok"><div class="big">⛔</div><h1>Link disabled</h1><p class="muted">For security, a gym's location can only be set from inside the FitAI app — by the owner, or a staff member the owner has allowed.</p></div>`));
+};
 exports.gymSetlocSave = async (req, res) => {
-  const r = readSetlocToken(req.params.token);
-  if (r.expired || r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⌛</div><h1>Link expired</h1></div>`));
-  const lat = parseFloat(req.body.lat), lng = parseFloat(req.body.lng);
-  if (isNaN(lat) || isNaN(lng)) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>No location</h1><a class="btn" href="/g/setloc/${req.params.token}">Retry</a></div>`));
-  const gymDoc = await Gym.findOne({ gymCode: r.gymCode }).select('owner name');
-  if (!gymDoc) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid</h1></div>`));
-  // Each gym needs its OWN location — block setting a spot already used by another
-  // of the owner's gyms (e.g. owner setting both branches from the same place).
-  const others = await Gym.find({ owner: gymDoc.owner, _id: { $ne: gymDoc._id } }).select('name lat lng');
-  const clash = others.find(o => o.lat != null && o.lng != null && distanceMeters(lat, lng, o.lat, o.lng) < 40);
-  if (clash) {
-    return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⚠️</div><h1>Location clash</h1>
-      <p class="muted">This spot is already the location of <b>${esc(clash.name)}</b>. Each gym must have its own location — open this "Set gym location" link while standing <b>inside ${esc(gymDoc.name)}</b>.</p>
-      <a class="btn" href="/g/setloc/${req.params.token}">Retry from the gym</a></div>`, r.gymCode));
-  }
-  await Gym.findOneAndUpdate({ gymCode: r.gymCode }, { lat, lng });
-  const d = 0.004;
-  const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${lng - d},${lat - d},${lng + d},${lat + d}&layer=mapnik&marker=${lat},${lng}`;
-  res.send(PAGE_SHELL(`<div class="ok"><div class="big">✅</div><h1>Location saved!</h1>
-    <p class="muted">${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
-    <iframe src="${mapSrc}" style="width:100%;height:200px;border:0;border-radius:12px;margin:12px 0" loading="lazy"></iframe>
-    <p class="muted">Members can now check in only when they're at the gym (within ${GEOFENCE_RADIUS_M}m).</p></div>`, r.gymCode));
+  res.status(410).send(PAGE_SHELL(`<div class="ok"><div class="big">⛔</div><h1>Link disabled</h1><p class="muted">A gym's location can only be set from the FitAI app.</p></div>`));
 };
 
 // @desc  LIVE scan — opened by scanning the rotating counter QR (encrypted, ~4 min).

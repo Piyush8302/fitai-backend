@@ -38,7 +38,8 @@ router.get('/:gymId/dashboard', c.getGymDashboard);  // stats
 router.get('/:gymId/fees', c.getGymFees);            // fee-due dashboard + filterable list
 router.get('/:gymId/checkin-token', c.getCheckinToken); // fresh time-limited wall-QR token
 router.get('/:gymId/kiosk-link', c.getKioskLink);    // long-lived counter-display link
-router.get('/:gymId/setloc-link', c.getSetlocLink);  // owner sets gym GPS for geofencing
+router.put('/:gymId/location', c.setGymLocation);    // set gym GPS from the app (owner / staff with canSetLocation)
+router.get('/:gymId/setloc-link', c.getSetlocLink);  // DISABLED (410) — legacy web setloc
 router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 
 // ---- Cashbook (owner, or a staff the owner granted cashbook access to) ----
