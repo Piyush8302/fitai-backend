@@ -52,5 +52,6 @@ router.get('/:gymId/report', reportsAccess, c.getMonthlyReport);
 router.get('/my/card', c.getMyCard);                 // membership card + gyms
 router.get('/my/:gymId/attendance', c.getMyAttendance); // my history at a gym
 router.post('/my/checkin', c.selfCheckIn);           // self check-in via gym QR
+router.post('/my/auto-checkin', c.autoCheckIn);      // geofence auto check-in (100m, app closed)
 
 module.exports = router;

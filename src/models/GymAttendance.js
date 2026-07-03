@@ -7,7 +7,8 @@ const gymAttendanceSchema = new mongoose.Schema({
   membership: { type: mongoose.Schema.Types.ObjectId, ref: 'Membership' },
   day: { type: String, required: true },  // 'YYYY-MM-DD' (IST) — for dedupe
   checkInAt: { type: Date, default: Date.now },
-  method: { type: String, enum: ['staff_scan', 'self_scan', 'manual'], default: 'staff_scan' },
+  // auto_geo = automatic check-in when the member's phone enters the gym geofence
+  method: { type: String, enum: ['staff_scan', 'self_scan', 'manual', 'auto_geo'], default: 'staff_scan' },
   markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 

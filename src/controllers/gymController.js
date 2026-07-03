@@ -143,7 +143,7 @@ const announceCheckin = (gymId, gymName, member = {}, method, excludeUserId) => 
   const av = member.avatar ? String(member.avatar) : '';
   const imageUrl = av.startsWith('http') ? av
     : (av.startsWith('data:') && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined);
-  const via = method === 'staff_scan' ? ' (staff scan)' : method === 'self_scan' ? '' : '';
+  const via = method === 'staff_scan' ? ' (staff scan)' : method === 'auto_geo' ? ' (auto — entered the gym)' : '';
   return notifyGymTeam(gymId, {
     title: `✅ Check-in — ${gymName || 'your gym'}`,
     body: `${member.name || 'A member'} just checked in${via}.`,
@@ -996,7 +996,7 @@ exports.getMonthlyReport = async (req, res, next) => {
 exports.getMyCard = async (req, res, next) => {
   try {
     const memberships = await Membership.find({ user: req.user.id })
-      .populate('gym', 'name location city')
+      .populate('gym', 'name location city lat lng')
       .sort({ createdAt: -1 });
     const now = new Date();
     const gyms = memberships.map(m => ({
@@ -1075,6 +1075,40 @@ exports.selfCheckIn = async (req, res, next) => {
       return res.status(201).json({ success: true, message: `Checked in at ${gym.name}`, data: { gym: gym.name } });
     } catch (dupErr) {
       if (dupErr.code === 11000) return res.json({ success: true, message: `Already checked in at ${gym.name} today`, data: { gym: gym.name, duplicate: true } });
+      throw dupErr;
+    }
+  } catch (e) { next(e); }
+};
+
+// @desc  Automatic check-in fired by the phone's geofence when a MEMBER enters
+//        the gym's 100m radius (no app open needed). Existing members only —
+//        never auto-registers; respects status, gym hours and the geofence.
+exports.autoCheckIn = async (req, res, next) => {
+  try {
+    const { gymId, lat, lng } = req.body;
+    if (!gymId) return res.status(400).json({ success: false, message: 'gymId required' });
+    const gym = await Gym.findById(gymId);
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+
+    const membership = await Membership.findOne({ user: req.user.id, gym: gym._id });
+    if (!membership) return res.status(403).json({ success: false, message: 'Not a member of this gym' });
+    const blk = memberBlockedMsg(membership);
+    if (blk) return res.status(403).json({ success: false, message: blk });
+    if (!gymOpenNow(gym)) return res.json({ success: true, data: { closed: true }, message: 'Gym is closed — attendance only during gym hours.' });
+
+    // Server-side distance double-check with the coords the phone reported.
+    const geo = checkGeofence(gym, lat, lng);
+    if (!geo.ok) {
+      return res.status(403).json({ success: false, message: geo.noCoords ? 'Location required for auto check-in' : `Too far (${geo.distance}m) — auto check-in works within ${GEOFENCE_RADIUS_M}m of the gym.` });
+    }
+
+    const day = istDay();
+    try {
+      await GymAttendance.create({ user: req.user.id, gym: gym._id, membership: membership._id, day, method: 'auto_geo' });
+      announceCheckin(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, avatar: req.user.avatar }, 'auto_geo', req.user.id);
+      return res.status(201).json({ success: true, message: `Auto checked in at ${gym.name}`, data: { gym: gym.name } });
+    } catch (dupErr) {
+      if (dupErr.code === 11000) return res.json({ success: true, message: 'Already checked in today', data: { duplicate: true } });
       throw dupErr;
     }
   } catch (e) { next(e); }
