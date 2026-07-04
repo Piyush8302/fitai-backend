@@ -92,26 +92,38 @@ exports.runGymFeeReminders = async () => {
       dueDate: { $lte: threeDays, $gte: overdueCap },
     }).populate('gym', 'name').populate('user', 'name expoPushToken');
 
+    const DAY = 24 * 3600 * 1000;
     let sent = 0;
     for (const m of memberships) {
       const u = m.user;
-      if (!u?.expoPushToken) continue;
+      if (!u?._id) continue;
       const gymName = m.gym?.name || 'Your gym';
       const due = new Date(m.dueDate);
       const overdue = due < now;
+      // Whole days between today and the due date (ceil so "today" still reads 0/1).
+      const diffDays = Math.round((due.setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY);
       const firstName = (u.name || '').split(' ')[0] || 'there';
+      const dueStr = new Date(m.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 
       // Gym name in title → clearly a gym notification (not FitAI)
       const title = `🏋️ ${gymName}`;
+      let when;
+      if (diffDays > 1) when = `due in ${diffDays} days (${dueStr})`;
+      else if (diffDays === 1) when = `due tomorrow (${dueStr})`;
+      else if (diffDays === 0) when = `due today (${dueStr})`;
+      else when = `overdue by ${Math.abs(diffDays)} day${Math.abs(diffDays) > 1 ? 's' : ''}`;
+      const amt = m.fee > 0 ? ` ₹${m.fee}` : '';
       const body = overdue
-        ? `Hi ${firstName}! Your ${gymName} fee is pending 🙏 Pay at the counter & keep crushing your goals 💪`
-        : `Hi ${firstName}! Gentle reminder — your ${gymName} fee is due ${due.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}. Stay consistent, pay on time 🔥`;
+        ? `Hi ${firstName}! Your ${gymName} fee${amt} is ${when} 🙏 Please pay at the counter to keep your membership active 💪`
+        : `Hi ${firstName}! Reminder — your ${gymName} fee${amt} is ${when}. Pay on time & stay consistent 🔥`;
 
+      // Always create the in-app notification (shows in the bell); push only if the
+      // member has a device token. Earlier we skipped members with no token entirely.
       await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
-      await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
+      if (u.expoPushToken) await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
       sent++;
     }
-    console.log(`[GymFeeReminder] sent ${sent} reminders`);
+    console.log(`[GymFeeReminder] processed ${sent} reminders`);
     return sent;
   } catch (e) {
     console.log('[GymFeeReminder] error:', e.message);

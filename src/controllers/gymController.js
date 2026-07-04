@@ -163,6 +163,16 @@ const addMonths = (date, months) => {
   return d;
 };
 
+// Billing cycle in DAYS — monthly = exactly 30 days from the join/last-paid date
+// (not a calendar month). So a member who joins today is due 30 days later, and
+// the fee reminder fires 3 days before that. day_pass = 1 day, trial = 2 days.
+const PLAN_DAYS = { trial: 2, day_pass: 1, monthly: 30, quarterly: 90, half_yearly: 180, yearly: 365 };
+const nextDue = (fromDate, plan) => {
+  const d = new Date(fromDate);
+  d.setDate(d.getDate() + (PLAN_DAYS[plan] ?? 30));
+  return d;
+};
+
 // Gyms the current user can manage (owner: their gyms; staff: their one gym)
 const myGymIds = async (user) => {
   if (user.role === 'gym_staff' && user.staffGym) return [String(user.staffGym)];
@@ -313,11 +323,10 @@ exports.addMember = async (req, res, next) => {
       return res.json({ success: true, message: 'Already a member', data: membership, alreadyMember: true });
     }
 
-    const months = PLAN_MONTHS[plan] ?? 1;
     membership = await Membership.create({
       user: user._id, gym: gymId, plan, fee,
       joinDate: new Date(),
-      dueDate: addMonths(new Date(), months),
+      dueDate: nextDue(new Date(), plan), // join + 30 days (monthly)
       status: 'active',
       addedBy: req.user.id,
     });
@@ -687,8 +696,9 @@ exports.markPayment = async (req, res, next) => {
     const finalPlan = plan || membership.plan;
     membership.lastPaidDate = new Date();
     // Owner can fix a custom due date; otherwise it's auto-calculated from the plan
+    // (monthly = 30 days from the payment date).
     const customDue = dueDate ? new Date(dueDate) : null;
-    membership.dueDate = (customDue && !isNaN(customDue)) ? customDue : addMonths(new Date(), months);
+    membership.dueDate = (customDue && !isNaN(customDue)) ? customDue : nextDue(new Date(), finalPlan);
     membership.status = 'active';
     if (plan) membership.plan = plan;
     if (amount) membership.fee = amount;
