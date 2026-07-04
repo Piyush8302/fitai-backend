@@ -154,6 +154,32 @@ const announceCheckin = (gymId, gymName, member = {}, method, excludeUserId) => 
   });
 };
 
+// Notify a member (+ the gym team) that their next fee due date changed. The
+// fee reminders themselves are driven off membership.dueDate, so they follow
+// this new date automatically (e.g. owner moves 30 Jul → 5 Jul, reminders start
+// 3 days before 5 Jul). memberUser must be a full User doc (_id + expoPushToken).
+const announceDueDateChange = async ({ gym, membership, memberUser, dueDate, changedBy, note }) => {
+  try {
+    const gymName = gym?.name || 'your gym';
+    const dueStr = new Date(dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    // → the member: in-app (bell / web) + push if the app is installed. Opens their gym card.
+    await notifyUsers([memberUser], {
+      title: `🏋️ ${gymName}`,
+      body: `Your next fee due date is now ${dueStr}. Please pay on or before this date. 🙏`,
+      type: 'reminder',
+      data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_due_update', dueDate: new Date(dueDate).toISOString() },
+    });
+    // → owner + all staff (skip whoever made the change). Opens the member's detail.
+    await notifyGymTeam(gym._id, {
+      title: `📅 Due date updated — ${gymName}`,
+      body: `${memberUser.name || 'A member'}'s next fee due date set to ${dueStr}${note ? ` (${note})` : ''}.`,
+      type: 'info',
+      data: { kind: 'due_update', screen: 'GymMemberDetail', gymId: String(gym._id), membershipId: membership ? String(membership._id) : undefined, memberId: String(memberUser._id) },
+      excludeUserId: changedBy,
+    });
+  } catch (e) { console.log('announceDueDateChange error:', e.message); }
+};
+
 const PLAN_MONTHS = { trial: 0, day_pass: 0, monthly: 1, quarterly: 3, half_yearly: 6, yearly: 12 };
 
 const addMonths = (date, months) => {
@@ -706,9 +732,22 @@ exports.markPayment = async (req, res, next) => {
 
     // Member + gym info (for the cashbook entry and the team notification)
     const [member, gym] = await Promise.all([
-      User.findById(membership.user).select('name phone avatar'),
+      User.findById(membership.user).select('name phone avatar expoPushToken'),
       Gym.findById(membership.gym).select('name'),
     ]);
+
+    // Tell the MEMBER their payment landed + the new due date (in-app + push).
+    try {
+      const dueStr = new Date(membership.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      await notifyUsers([member], {
+        title: `🏋️ ${gym?.name || 'Your gym'}`,
+        body: amount > 0
+          ? `Payment of ₹${amount} received ✅ Your next fee is due ${dueStr}. Keep it up! 💪`
+          : `Your membership is updated. Next fee due ${dueStr}.`,
+        type: 'success',
+        data: { screen: 'MyGymCard', gym: gym?.name, kind: 'gym_payment', dueDate: new Date(membership.dueDate).toISOString() },
+      });
+    } catch (e) { console.log('member payment notify error:', e.message); }
 
     // Auto-add this payment to the cashbook as income (so owner doesn't re-enter)
     if (amount > 0) {
@@ -722,6 +761,35 @@ exports.markPayment = async (req, res, next) => {
     }
 
     res.status(201).json({ success: true, data: { payment, membership } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Set/change a member's next fee due date WITHOUT recording a payment
+//        (e.g. owner grants extra time, or corrects a date). Notifies the member
+//        (app + web) and the owner + staff; fee reminders follow the new date.
+exports.setMemberDueDate = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const { dueDate } = req.body;
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canMarkPayment')) return denyStaff(res, 'change the due date');
+
+    const d = dueDate ? new Date(dueDate) : null;
+    if (!d || isNaN(d)) return res.status(400).json({ success: false, message: 'Valid due date required' });
+
+    membership.dueDate = d;
+    await membership.save();
+
+    const [member, gym] = await Promise.all([
+      User.findById(membership.user).select('name phone avatar expoPushToken'),
+      Gym.findById(membership.gym).select('name'),
+    ]);
+    if (member && gym) {
+      await announceDueDateChange({ gym, membership, memberUser: member, dueDate: d, changedBy: req.user.id });
+    }
+    res.json({ success: true, message: `Due date updated to ${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`, data: { membership } });
   } catch (e) { next(e); }
 };
 
