@@ -158,12 +158,14 @@ const announceCheckin = (gymId, gymName, member = {}, method, excludeUserId) => 
 // fee reminders themselves are driven off membership.dueDate, so they follow
 // this new date automatically (e.g. owner moves 30 Jul → 5 Jul, reminders start
 // 3 days before 5 Jul). memberUser must be a full User doc (_id + expoPushToken).
-const announceDueDateChange = async ({ gym, membership, memberUser, dueDate, changedBy, note }) => {
+const announceDueDateChange = async ({ gym, membership, memberUser, dueDate, changedBy, note, notifyMember = true }) => {
   try {
     const gymName = gym?.name || 'your gym';
     const dueStr = new Date(dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-    // → the member: in-app (bell / web) + push if the app is installed. Opens their gym card.
-    await notifyUsers([memberUser], {
+    // → the member: in-app (bell / web) + push if the app is installed. Opens their
+    //   gym card. Skipped when we've already sent them the actual fee reminder now
+    //   (due date fell inside the reminder window) so they don't get two pings.
+    if (notifyMember) await notifyUsers([memberUser], {
       title: `🏋️ ${gymName}`,
       body: `Your next fee due date is now ${dueStr}. Please pay on or before this date. 🙏`,
       type: 'reminder',
@@ -787,7 +789,11 @@ exports.setMemberDueDate = async (req, res, next) => {
       Gym.findById(membership.gym).select('name'),
     ]);
     if (member && gym) {
-      await announceDueDateChange({ gym, membership, memberUser: member, dueDate: d, changedBy: req.user.id });
+      // If the new due date is already inside the reminder window (today / overdue /
+      // ≤3 days away), fire the real fee reminder to the member RIGHT NOW; else just
+      // tell them the date changed. Owner + staff are always notified of the change.
+      const remindedNow = await require('./notificationsController').remindMemberNow(membership._id);
+      await announceDueDateChange({ gym, membership, memberUser: member, dueDate: d, changedBy: req.user.id, notifyMember: !remindedNow });
     }
     res.json({ success: true, message: `Due date updated to ${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`, data: { membership } });
   } catch (e) { next(e); }

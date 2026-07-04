@@ -72,18 +72,77 @@ exports.runDailyCalorieCheck = async () => {
   }
 };
 
-// ===== GYM FEE REMINDERS (runs twice daily via scheduler) =====
+// ===== GYM FEE REMINDERS =====
 // Reminds members whose fee is due within 3 days OR overdue, until they pay.
 // When the owner marks payment, dueDate jumps forward → reminders auto-stop.
-// IMPORTANT: gym name is in the title so the user knows it's a GYM notification,
-// not a FitAI fitness notification.
+// Runs as a daily batch (10 AM & 6 PM IST) AND on-demand right when the owner
+// sets a due date that already falls inside the window (e.g. due date = today).
+const DAY_MS = 24 * 3600 * 1000;
+
+// Is this due date inside the reminder window? (≤3 days away or overdue, but not
+// more than 60 days overdue so we don't spam dead memberships).
+const inFeeReminderWindow = (dueDate) => {
+  if (!dueDate) return false;
+  const now = Date.now();
+  const due = new Date(dueDate).getTime();
+  if (isNaN(due)) return false;
+  return due <= now + 3 * DAY_MS && due >= now - 60 * DAY_MS;
+};
+
+// Build the {title, body} for one fee reminder. Gym name is in the title so the
+// member knows it's a GYM notification, not a FitAI fitness one.
+const feeReminderText = (gymName, userName, dueDate, fee) => {
+  const now = new Date();
+  const overdue = new Date(dueDate) < now;
+  const diffDays = Math.round((new Date(dueDate).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS);
+  const firstName = (userName || '').split(' ')[0] || 'there';
+  const dueStr = new Date(dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  let when;
+  if (diffDays > 1) when = `due in ${diffDays} days (${dueStr})`;
+  else if (diffDays === 1) when = `due tomorrow (${dueStr})`;
+  else if (diffDays === 0) when = `due today (${dueStr})`;
+  else when = `overdue by ${Math.abs(diffDays)} day${Math.abs(diffDays) > 1 ? 's' : ''}`;
+  const amt = fee > 0 ? ` ₹${fee}` : '';
+  const title = `🏋️ ${gymName}`;
+  const body = overdue
+    ? `Hi ${firstName}! Your ${gymName} fee${amt} is ${when} 🙏 Please pay at the counter to keep your membership active 💪`
+    : `Hi ${firstName}! Reminder — your ${gymName} fee${amt} is ${when}. Pay on time & stay consistent 🔥`;
+  return { title, body };
+};
+
+// Send a single fee reminder (in-app always + push if a device token exists).
+// `m` must have populated gym {name} and user {name, expoPushToken}.
+const sendFeeReminderForMembership = async (m) => {
+  const u = m.user;
+  if (!u?._id) return false;
+  const gymName = m.gym?.name || 'Your gym';
+  const { title, body } = feeReminderText(gymName, u.name, m.dueDate, m.fee);
+  await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
+  if (u.expoPushToken) await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
+  return true;
+};
+
+// Immediately remind ONE member if their (new) due date is inside the window —
+// called when the owner sets a due date to today / overdue / ≤3 days away.
+// Returns true if a reminder was actually sent.
+exports.remindMemberNow = async (membershipId) => {
+  try {
+    const Membership = require('../models/Membership');
+    const m = await Membership.findById(membershipId).populate('gym', 'name').populate('user', 'name expoPushToken');
+    if (!m) return false;
+    if (m.fee <= 0 || ['trial', 'day_pass'].includes(m.plan) || m.status !== 'active') return false;
+    if (!inFeeReminderWindow(m.dueDate)) return false;
+    return await sendFeeReminderForMembership(m);
+  } catch (e) { console.log('[remindMemberNow] error:', e.message); return false; }
+};
+
 exports.runGymFeeReminders = async () => {
   try {
     const Membership = require('../models/Membership');
     const now = new Date();
-    const threeDays = new Date(now.getTime() + 3 * 24 * 3600 * 1000);
+    const threeDays = new Date(now.getTime() + 3 * DAY_MS);
     // 60-day overdue cap so we don't spam forever on dead memberships
-    const overdueCap = new Date(now.getTime() - 60 * 24 * 3600 * 1000);
+    const overdueCap = new Date(now.getTime() - 60 * DAY_MS);
 
     const memberships = await Membership.find({
       fee: { $gt: 0 },
@@ -92,37 +151,8 @@ exports.runGymFeeReminders = async () => {
       dueDate: { $lte: threeDays, $gte: overdueCap },
     }).populate('gym', 'name').populate('user', 'name expoPushToken');
 
-    const DAY = 24 * 3600 * 1000;
     let sent = 0;
-    for (const m of memberships) {
-      const u = m.user;
-      if (!u?._id) continue;
-      const gymName = m.gym?.name || 'Your gym';
-      const due = new Date(m.dueDate);
-      const overdue = due < now;
-      // Whole days between today and the due date (ceil so "today" still reads 0/1).
-      const diffDays = Math.round((due.setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY);
-      const firstName = (u.name || '').split(' ')[0] || 'there';
-      const dueStr = new Date(m.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-
-      // Gym name in title → clearly a gym notification (not FitAI)
-      const title = `🏋️ ${gymName}`;
-      let when;
-      if (diffDays > 1) when = `due in ${diffDays} days (${dueStr})`;
-      else if (diffDays === 1) when = `due tomorrow (${dueStr})`;
-      else if (diffDays === 0) when = `due today (${dueStr})`;
-      else when = `overdue by ${Math.abs(diffDays)} day${Math.abs(diffDays) > 1 ? 's' : ''}`;
-      const amt = m.fee > 0 ? ` ₹${m.fee}` : '';
-      const body = overdue
-        ? `Hi ${firstName}! Your ${gymName} fee${amt} is ${when} 🙏 Please pay at the counter to keep your membership active 💪`
-        : `Hi ${firstName}! Reminder — your ${gymName} fee${amt} is ${when}. Pay on time & stay consistent 🔥`;
-
-      // Always create the in-app notification (shows in the bell); push only if the
-      // member has a device token. Earlier we skipped members with no token entirely.
-      await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
-      if (u.expoPushToken) await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
-      sent++;
-    }
+    for (const m of memberships) { if (await sendFeeReminderForMembership(m)) sent++; }
     console.log(`[GymFeeReminder] processed ${sent} reminders`);
     return sent;
   } catch (e) {
