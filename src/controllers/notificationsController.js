@@ -266,15 +266,35 @@ exports.sendNotification = async (req, res, next) => {
 
     const notifType = type || 'info';
 
-    if (targetAudience === 'all') {
-      const users = await User.find({ isActive: { $ne: false } }).select('_id expoPushToken');
-      const notifications = users.map(u => ({ user: u._id, title, body: notifBody, type: notifType }));
-      await Notification.insertMany(notifications);
+    // Audience broadcasts: all users, only premium users, gym owners, or the
+    // members of one specific gym (targetAudience 'gym_members' + gymId).
+    const BROADCASTS = ['all', 'premium', 'gym_owners', 'gym_members'];
+    if (BROADCASTS.includes(targetAudience)) {
+      let users = [];
+      let label = targetAudience;
+      if (targetAudience === 'all') {
+        users = await User.find({ isActive: { $ne: false } }).select('_id expoPushToken');
+        label = 'all users';
+      } else if (targetAudience === 'premium') {
+        users = await User.find({ isActive: { $ne: false }, isPremium: true }).select('_id expoPushToken');
+        label = 'premium users';
+      } else if (targetAudience === 'gym_owners') {
+        users = await User.find({ $or: [{ role: 'gym_owner' }, { ownerStatus: 'approved' }] }).select('_id expoPushToken');
+        label = 'gym owners';
+      } else if (targetAudience === 'gym_members') {
+        const { gymId } = req.body;
+        if (!gymId) return res.status(400).json({ success: false, message: 'gymId is required for gym_members' });
+        const Membership = require('../models/Membership');
+        const memberIds = (await Membership.find({ gym: gymId }).select('user')).map(m => m.user);
+        users = await User.find({ _id: { $in: memberIds } }).select('_id expoPushToken');
+        label = 'gym members';
+      }
 
+      if (!users.length) return res.status(200).json({ success: true, message: `No ${label} to notify` });
+      await Notification.insertMany(users.map(u => ({ user: u._id, title, body: notifBody, type: notifType, data })));
       const pushTokens = users.map(u => u.expoPushToken).filter(Boolean);
       if (pushTokens.length > 0) await sendExpoPush(pushTokens, title, notifBody, data);
-
-      return res.status(201).json({ success: true, message: `Sent to ${users.length} users (${pushTokens.length} push)` });
+      return res.status(201).json({ success: true, message: `Sent to ${users.length} ${label} (${pushTokens.length} push)` });
     }
 
     let targetUser;

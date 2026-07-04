@@ -61,18 +61,29 @@ exports.rejectOwnerRequest = async (req, res, next) => {
 // @desc    Dashboard stats
 exports.getDashboard = async (req, res, next) => {
   try {
-    const [totalUsers, premiumUsers, totalWorkouts, totalDiets, activeSubscriptions, recentUsers] = await Promise.all([
+    const Membership = require('../models/Membership');
+    const GymPayment = require('../models/GymPayment');
+
+    const [totalUsers, premiumUsers, totalWorkouts, totalDiets, activeSubscriptions, recentUsers,
+      totalGyms, activeGyms, totalGymMembers, pendingOwnerRequests] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ isPremium: true }),
       Workout.countDocuments(),
       DietPlan.countDocuments(),
       Subscription.countDocuments({ status: 'active' }),
       User.find().sort({ createdAt: -1 }).limit(10).select('name email isPremium createdAt'),
+      Gym.countDocuments(),
+      Gym.countDocuments({ isActive: { $ne: false } }),
+      Membership.countDocuments(),
+      User.countDocuments({ ownerStatus: 'pending' }),
     ]);
 
-    const revenue = await Subscription.aggregate([
-      { $match: { status: 'active' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
+    const [revenue, gymRevenueAgg] = await Promise.all([
+      Subscription.aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      GymPayment.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]),
     ]);
 
     res.json({
@@ -81,12 +92,127 @@ exports.getDashboard = async (req, res, next) => {
         totalUsers, premiumUsers, freeUsers: totalUsers - premiumUsers,
         totalWorkouts, totalDiets, activeSubscriptions,
         totalRevenue: revenue[0]?.total ? revenue[0].total / 100 : 0,
+        // Gym platform KPIs
+        totalGyms, activeGyms,
+        suspendedGyms: totalGyms - activeGyms,
+        totalGymMembers,
+        gymRevenue: gymRevenueAgg[0]?.total || 0, // gym membership payments (already in ₹)
+        pendingOwnerRequests,
         recentUsers,
       },
     });
   } catch (error) {
     next(error);
   }
+};
+
+// ===== GYMS (platform-wide oversight) =====
+
+// @desc  List every gym on the platform with owner, members count & revenue.
+//        Supports ?search= (name/city/owner) and ?status=active|suspended + pagination.
+exports.getGyms = async (req, res, next) => {
+  try {
+    const Membership = require('../models/Membership');
+    const GymPayment = require('../models/GymPayment');
+    const { page = 1, limit = 20, search = '', status } = req.query;
+
+    const filter = {};
+    if (status === 'active') filter.isActive = { $ne: false };
+    else if (status === 'suspended') filter.isActive = false;
+    if (search) {
+      const rx = new RegExp(search.trim(), 'i');
+      // Match gyms by name/city/code, or by their owner's name/phone.
+      const owners = await User.find({ $or: [{ name: rx }, { phone: rx }] }).select('_id');
+      filter.$or = [{ name: rx }, { city: rx }, { gymCode: rx }, { owner: { $in: owners.map(o => o._id) } }];
+    }
+
+    const total = await Gym.countDocuments(filter);
+    const gyms = await Gym.find(filter)
+      .populate('owner', 'name phone email')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit).limit(parseInt(limit))
+      .lean();
+
+    // Members + revenue per gym in two grouped queries (fast, no N+1).
+    const ids = gyms.map(g => g._id);
+    const [memberAgg, revAgg] = await Promise.all([
+      Membership.aggregate([{ $match: { gym: { $in: ids } } }, { $group: { _id: '$gym', c: { $sum: 1 } } }]),
+      GymPayment.aggregate([{ $match: { gym: { $in: ids } } }, { $group: { _id: '$gym', total: { $sum: '$amount' } } }]),
+    ]);
+    const memberMap = Object.fromEntries(memberAgg.map(m => [String(m._id), m.c]));
+    const revMap = Object.fromEntries(revAgg.map(r => [String(r._id), r.total]));
+
+    const data = gyms.map(g => ({
+      _id: g._id,
+      name: g.name,
+      city: g.city || '',
+      gymCode: g.gymCode,
+      phone: g.phone || '',
+      isActive: g.isActive !== false,
+      hasLocation: g.lat != null && g.lng != null,
+      owner: g.owner ? { _id: g.owner._id, name: g.owner.name, phone: g.owner.phone, email: g.owner.email } : null,
+      members: memberMap[String(g._id)] || 0,
+      revenue: revMap[String(g._id)] || 0,
+      createdAt: g.createdAt,
+    }));
+
+    res.json({ success: true, count: data.length, total, page: parseInt(page), pages: Math.ceil(total / limit), data });
+  } catch (e) { next(e); }
+};
+
+// @desc  One gym's full picture: info, owner, staff, members, revenue & attendance today.
+exports.getGymDetail = async (req, res, next) => {
+  try {
+    const Membership = require('../models/Membership');
+    const GymPayment = require('../models/GymPayment');
+    const GymAttendance = require('../models/GymAttendance');
+    const gym = await Gym.findById(req.params.id).populate('owner', 'name phone email staffStatus').lean();
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+
+    const istDay = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
+    const [staff, memberships, revAgg, todayCount] = await Promise.all([
+      User.find({ role: 'gym_staff', staffGym: gym._id }).select('name phone staffRole staffStatus').lean(),
+      Membership.find({ gym: gym._id }).populate('user', 'name phone avatar').sort({ createdAt: -1 }).limit(50).lean(),
+      GymPayment.aggregate([{ $match: { gym: gym._id } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+      GymAttendance.countDocuments({ gym: gym._id, day: istDay }),
+    ]);
+
+    const totalMembers = await Membership.countDocuments({ gym: gym._id });
+    const activeMembers = await Membership.countDocuments({ gym: gym._id, status: 'active' });
+
+    res.json({
+      success: true,
+      data: {
+        gym: {
+          _id: gym._id, name: gym.name, city: gym.city, location: gym.location, phone: gym.phone,
+          gymCode: gym.gymCode, isActive: gym.isActive !== false, hasLocation: gym.lat != null && gym.lng != null,
+          slots: gym.slots || [], planPrices: gym.planPrices || {}, createdAt: gym.createdAt,
+        },
+        owner: gym.owner,
+        stats: {
+          totalMembers, activeMembers, staffCount: staff.length,
+          revenue: revAgg[0]?.total || 0, payments: revAgg[0]?.count || 0,
+          checkinsToday: todayCount,
+        },
+        staff,
+        members: memberships.map(m => ({
+          _id: m._id, user: m.user, plan: m.plan, fee: m.fee, status: m.status,
+          dueDate: m.dueDate, joinDate: m.joinDate,
+        })),
+      },
+    });
+  } catch (e) { next(e); }
+};
+
+// @desc  Suspend or re-activate a gym (isActive). A suspended gym is disabled platform-wide.
+exports.toggleGymActive = async (req, res, next) => {
+  try {
+    const gym = await Gym.findById(req.params.id);
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    gym.isActive = gym.isActive === false; // flip: false → true, true/undefined → false
+    await gym.save();
+    res.json({ success: true, message: gym.isActive ? 'Gym activated' : 'Gym suspended', data: { _id: gym._id, isActive: gym.isActive } });
+  } catch (e) { next(e); }
 };
 
 // @desc    Get all users

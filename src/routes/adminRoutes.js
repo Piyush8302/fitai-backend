@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest, getGyms, getGymDetail, toggleGymActive } = require('../controllers/adminController');
 const { getMessages, resolveMessage, deleteMessage } = require('../controllers/supportController');
 const { protect, admin } = require('../middleware/auth');
 
@@ -22,6 +22,11 @@ const { protect, admin } = require('../middleware/auth');
  *       200: { description: Dashboard with total users, revenue, etc }
  */
 router.get('/dashboard', protect, admin, getDashboard);
+
+// ---- Gyms (platform-wide oversight) ----
+router.get('/gyms', protect, admin, getGyms);
+router.get('/gyms/:id', protect, admin, getGymDetail);
+router.put('/gyms/:id/active', protect, admin, toggleGymActive);
 
 /**
  * @swagger
