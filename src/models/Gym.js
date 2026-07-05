@@ -31,7 +31,13 @@ const gymSchema = new mongoose.Schema({
     half_yearly: { type: Number, default: 0 },
     yearly: { type: Number, default: 0 },
   },
+  // isActive:false = suspended by super-admin. A suspended gym is frozen: members
+  // can't check in and owner/staff can't perform actions (they can still log in
+  // and view data). The owner can raise a reactivation request from the app.
   isActive: { type: Boolean, default: true },
+  reactivationRequested: { type: Boolean, default: false },
+  reactivationRequestedAt: { type: Date },
+  reactivationNote: { type: String, trim: true },
 }, { timestamps: true });
 
 // Generate a readable unique gym code before save

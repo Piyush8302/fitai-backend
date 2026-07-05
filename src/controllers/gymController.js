@@ -223,6 +223,19 @@ const staffCan = (user, flag) => {
 };
 const denyStaff = (res, action) => res.status(403).json({ success: false, message: `You don't have permission to ${action}. Ask the gym owner.` });
 
+// ── Gym suspension (super-admin) ──
+// A suspended gym (isActive:false) is FROZEN: members can't check in and the
+// owner/staff can't perform actions. Two audiences, two messages.
+const isGymSuspended = (gym) => !!gym && gym.isActive === false;
+const GYM_SUSPENDED_MEMBER = 'This gym is temporarily suspended. Please contact the gym team.';
+const GYM_SUSPENDED_TEAM = 'Your gym has been suspended by FitAI admin. Open the gym to request reactivation.';
+// Guard an owner/staff ACTION. Returns true (and sends 403) if the gym is suspended.
+const denyIfSuspended = (res, gym, forMember = false) => {
+  if (!isGymSuspended(gym)) return false;
+  res.status(403).json({ success: false, message: forMember ? GYM_SUSPENDED_MEMBER : GYM_SUSPENDED_TEAM, suspended: true });
+  return true;
+};
+
 // @desc  Serve a user's avatar as a real image (so push thumbnails can use a URL).
 //        Public — Expo fetches it from the device with no auth header.
 exports.getAvatarImage = async (req, res) => {
@@ -284,6 +297,7 @@ exports.updateGym = async (req, res, next) => {
     if (!staffCan(req.user, 'canEditGym')) return denyStaff(res, 'edit the gym');
     const gym = await Gym.findById(gymId);
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    if (denyIfSuspended(res, gym)) return;
 
     // Build a $set update — replacing the slots array via $set is the reliable way
     // to persist a full multi-slot array (avoids subdocument-array save quirks that
@@ -310,6 +324,38 @@ exports.updateGym = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Owner/staff asks the super-admin to reactivate a suspended gym.
+//        Flags the gym and notifies every admin (in-app + push). The admin then
+//        approves it (activates the gym) from the admin portal.
+exports.requestReactivation = async (req, res, next) => {
+  try {
+    const { gymId } = req.params;
+    if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const gym = await Gym.findById(gymId);
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    if (gym.isActive !== false) return res.status(400).json({ success: false, message: 'This gym is already active.' });
+    if (gym.reactivationRequested) return res.json({ success: true, message: 'Your reactivation request is already pending with the admin.' });
+
+    gym.reactivationRequested = true;
+    gym.reactivationRequestedAt = new Date();
+    gym.reactivationNote = String(req.body.note || '').slice(0, 300);
+    await gym.save();
+
+    // Notify all super-admins.
+    try {
+      const admins = await User.find({ role: 'admin' }).select('_id expoPushToken');
+      await notifyUsers(admins, {
+        title: '🔓 Gym reactivation request',
+        body: `${gym.name} has requested reactivation${gym.reactivationNote ? `: "${gym.reactivationNote}"` : ''}.`,
+        type: 'warning',
+        data: { kind: 'reactivation_request', gymId: String(gym._id), gymName: gym.name },
+      });
+    } catch (e) { console.log('reactivation notify error:', e.message); }
+
+    res.json({ success: true, message: 'Reactivation request sent to admin. You’ll be notified once it’s approved.' });
+  } catch (e) { next(e); }
+};
+
 // @desc  My gyms (owner) or my gym (staff)
 exports.getMyGyms = async (req, res, next) => {
   try {
@@ -326,6 +372,7 @@ exports.addMember = async (req, res, next) => {
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canAddMember')) return denyStaff(res, 'add members');
+    if (denyIfSuspended(res, await Gym.findById(gymId).select('isActive'))) return;
 
     // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
     const avatarUrl = await uploadAvatar(avatar);
@@ -375,6 +422,7 @@ exports.addStaff = async (req, res, next) => {
     const { gymId, name, phone, staffRole, salary, avatar } = req.body;
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (denyIfSuspended(res, await Gym.findById(gymId).select('isActive'))) return;
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
 
@@ -637,6 +685,7 @@ exports.setMemberStatus = async (req, res, next) => {
     if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canManageStatus')) return denyStaff(res, 'change member status');
+    if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
     membership.status = status;
     await membership.save();
 
@@ -714,6 +763,7 @@ exports.markPayment = async (req, res, next) => {
     if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canMarkPayment')) return denyStaff(res, 'mark payments');
+    if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
 
     const months = periodMonths || PLAN_MONTHS[plan || membership.plan] || 1;
     const payment = await GymPayment.create({
@@ -777,6 +827,7 @@ exports.setMemberDueDate = async (req, res, next) => {
     if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canMarkPayment')) return denyStaff(res, 'change the due date');
+    if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
 
     const d = dueDate ? new Date(dueDate) : null;
     if (!d || isNaN(d)) return res.status(400).json({ success: false, message: 'Valid due date required' });
@@ -836,6 +887,7 @@ exports.markAttendance = async (req, res, next) => {
     if (!gymId || !userId) return res.status(400).json({ success: false, message: 'gymId and userId required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canMarkPresent')) return denyStaff(res, 'mark attendance');
+    if (denyIfSuspended(res, await Gym.findById(gymId).select('isActive'))) return;
 
     // Open model: if not a member yet, auto-create a trial membership
     let membership = await Membership.findOne({ user: userId, gym: gymId });
@@ -1128,6 +1180,7 @@ exports.selfCheckIn = async (req, res, next) => {
     }
     const gym = await Gym.findOne({ gymCode });
     if (!gym) return res.status(404).json({ success: false, message: 'Invalid gym QR' });
+    if (denyIfSuspended(res, gym, true)) return;
 
     // Open model: auto-create membership if none
     let membership = await Membership.findOne({ user: req.user.id, gym: gym._id });
@@ -1174,6 +1227,7 @@ exports.autoCheckIn = async (req, res, next) => {
     if (!gymId) return res.status(400).json({ success: false, message: 'gymId required' });
     const gym = await Gym.findById(gymId);
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    if (denyIfSuspended(res, gym, true)) return;
 
     const membership = await Membership.findOne({ user: req.user.id, gym: gym._id });
     if (!membership) return res.status(403).json({ success: false, message: 'Not a member of this gym' });
@@ -1633,6 +1687,7 @@ exports.gymTokenPage = async (req, res) => {
     if (r.invalid || !r.gymCode) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1><p class="muted">Please scan the QR at the gym counter.</p></div>`));
     const gym = await Gym.findOne({ gymCode: r.gymCode });
     if (!gym) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Invalid QR</h1></div>`));
+    if (isGymSuspended(gym)) return res.send(PAGE_SHELL(`<div class="ok"><div class="big">⛔</div><h1>Gym suspended</h1><p class="muted">${esc(gym.name)} is temporarily suspended. Attendance can't be marked. Please contact the gym team.</p></div>`, gym.gymCode));
 
     const savedPhone = getCookie(req, 'gphone');
     if (savedPhone && req.query.new !== '1') {
@@ -1787,6 +1842,7 @@ exports.webCheckIn = async (req, res, next) => {
     if (phone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
     const gym = await Gym.findOne({ gymCode: req.body.gymCode });
     if (!gym) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
+    if (isGymSuspended(gym)) return res.status(403).json({ success: false, message: GYM_SUSPENDED_MEMBER, suspended: true });
     let user = await User.findOne({ phone });
     if (!user) user = await User.create({ name: req.body.name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
     const r = await attendUser(gym, user);

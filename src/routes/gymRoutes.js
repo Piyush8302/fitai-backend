@@ -40,6 +40,7 @@ router.get('/:gymId/fees', c.getGymFees);            // fee-due dashboard + filt
 router.get('/:gymId/checkin-token', c.getCheckinToken); // fresh time-limited wall-QR token
 router.get('/:gymId/kiosk-link', c.getKioskLink);    // long-lived counter-display link
 router.put('/:gymId/location', c.setGymLocation);    // set gym GPS from the app (owner / staff with canSetLocation)
+router.post('/:gymId/request-reactivation', c.requestReactivation); // owner asks admin to un-suspend
 router.get('/:gymId/setloc-link', c.getSetlocLink);  // DISABLED (410) — legacy web setloc
 router.get('/:gymId/attendance', c.getGymAttendance);// attendance list
 

@@ -124,6 +124,7 @@ exports.getGyms = async (req, res, next) => {
     const filter = {};
     if (status === 'active') filter.isActive = { $ne: false };
     else if (status === 'suspended') filter.isActive = false;
+    else if (status === 'requested') { filter.isActive = false; filter.reactivationRequested = true; }
     if (search) {
       const rx = new RegExp(search.trim(), 'i');
       // Match gyms by name/city/code, or by their owner's name/phone.
@@ -154,6 +155,7 @@ exports.getGyms = async (req, res, next) => {
       gymCode: g.gymCode,
       phone: g.phone || '',
       isActive: g.isActive !== false,
+      reactivationRequested: !!g.reactivationRequested,
       hasLocation: g.lat != null && g.lng != null,
       owner: g.owner ? { _id: g.owner._id, name: g.owner.name, phone: g.owner.phone, email: g.owner.email } : null,
       members: memberMap[String(g._id)] || 0,
@@ -191,6 +193,7 @@ exports.getGymDetail = async (req, res, next) => {
         gym: {
           _id: gym._id, name: gym.name, city: gym.city, location: gym.location, phone: gym.phone,
           gymCode: gym.gymCode, isActive: gym.isActive !== false, hasLocation: gym.lat != null && gym.lng != null,
+          reactivationRequested: !!gym.reactivationRequested, reactivationNote: gym.reactivationNote || '',
           slots: gym.slots || [], planPrices: gym.planPrices || {}, createdAt: gym.createdAt,
         },
         owner: gym.owner,
@@ -215,7 +218,24 @@ exports.toggleGymActive = async (req, res, next) => {
     const gym = await Gym.findById(req.params.id);
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
     gym.isActive = gym.isActive === false; // flip: false → true, true/undefined → false
+    if (gym.isActive) { gym.reactivationRequested = false; gym.reactivationRequestedAt = undefined; gym.reactivationNote = undefined; }
     await gym.save();
+
+    // Tell the owner the outcome (in-app + push).
+    try {
+      const owner = await User.findById(gym.owner).select('_id expoPushToken');
+      if (owner) {
+        const Notification = require('../models/Notification');
+        const { sendExpoPush } = require('../utils/push');
+        const title = gym.isActive ? `✅ ${gym.name} reactivated` : `⛔ ${gym.name} suspended`;
+        const body = gym.isActive
+          ? 'Your gym has been reactivated by FitAI admin. Everything is back to normal.'
+          : 'Your gym has been suspended by FitAI admin. Open the gym in the app to request reactivation.';
+        await Notification.create({ user: owner._id, title, body, type: gym.isActive ? 'success' : 'warning', data: { kind: 'gym_status', screen: 'GymAdmin' } });
+        if (owner.expoPushToken) await sendExpoPush([owner.expoPushToken], title, body, { screen: 'GymAdmin' });
+      }
+    } catch (e) { console.log('gym status notify error:', e.message); }
+
     res.json({ success: true, message: gym.isActive ? 'Gym activated' : 'Gym suspended', data: { _id: gym._id, isActive: gym.isActive } });
   } catch (e) { next(e); }
 };
