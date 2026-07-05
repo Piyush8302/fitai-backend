@@ -63,13 +63,15 @@ exports.getDashboard = async (req, res, next) => {
   try {
     const Membership = require('../models/Membership');
     const GymPayment = require('../models/GymPayment');
+    const Article = require('../models/Article');
 
-    const [totalUsers, premiumUsers, totalWorkouts, totalDiets, activeSubscriptions, recentUsers,
+    const [totalUsers, premiumUsers, totalWorkouts, totalDiets, totalArticles, activeSubscriptions, recentUsers,
       totalGyms, activeGyms, totalGymMembers, pendingOwnerRequests] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ isPremium: true }),
       Workout.countDocuments(),
       DietPlan.countDocuments(),
+      Article.countDocuments(),
       Subscription.countDocuments({ status: 'active' }),
       User.find().sort({ createdAt: -1 }).limit(10).select('name email isPremium createdAt'),
       Gym.countDocuments(),
@@ -90,7 +92,10 @@ exports.getDashboard = async (req, res, next) => {
       success: true,
       data: {
         totalUsers, premiumUsers, freeUsers: totalUsers - premiumUsers,
-        totalWorkouts, totalDiets, activeSubscriptions,
+        totalWorkouts,
+        totalDiets, totalDietPlans: totalDiets, // admin UI reads totalDietPlans
+        totalArticles,
+        activeSubscriptions,
         totalRevenue: revenue[0]?.total ? revenue[0].total / 100 : 0,
         // Gym platform KPIs
         totalGyms, activeGyms,
