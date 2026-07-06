@@ -163,7 +163,8 @@ exports.sendOtp = async (req, res, next) => {
       if (!user) user = await User.create({ email, name: 'User', authProvider: 'otp' });
     } else {
       user = await User.findOne({ phone });
-      if (!user) user = await User.create({ phone, name: 'User', email: `${phone}@fitai.temp`, authProvider: 'otp' });
+      // Phone OTP signup: no placeholder email — it stays empty until the user adds one.
+      if (!user) user = await User.create({ phone, name: 'User', authProvider: 'otp' });
     }
 
     user.otp = otp;

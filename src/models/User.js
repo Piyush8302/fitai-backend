@@ -4,7 +4,9 @@ const jwt = require('jsonwebtoken');
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  // Optional: phone-only members/staff have no email until they add one. Unique
+  // is enforced only among users who actually have an email (sparse index).
+  email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
   phone: { type: String, unique: true, sparse: true },
   password: { type: String, minlength: 6, select: false },
   avatar: { type: String, default: '' },
@@ -77,6 +79,13 @@ const userSchema = new mongoose.Schema({
   // Staff account status (owner-managed). Non-active staff can't perform gym actions.
   staffStatus: { type: String, enum: ['active', 'inactive', 'blocked', 'left'], default: 'active' },
 }, { timestamps: true });
+
+// Never store an empty-string email — normalise '' to undefined so the sparse
+// unique index skips it (empty strings would otherwise collide with each other).
+userSchema.pre('save', function (next) {
+  if (this.email === '' || this.email === null) this.email = undefined;
+  next();
+});
 
 // Hash password
 userSchema.pre('save', async function (next) {

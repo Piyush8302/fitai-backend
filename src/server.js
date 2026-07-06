@@ -196,8 +196,33 @@ const startCalorieCheckScheduler = () => {
   }, 10 * 60 * 1000); // check every 10 minutes
 };
 
+// One-time (idempotent) migration: email is now optional. Make the unique index
+// sparse (so many users can have no email) and clear old placeholder emails
+// (g_..@fitai.local / <phone>@fitai.temp) → empty, so they read as null.
+const migrateUserEmails = async () => {
+  try {
+    const User = require('./models/User');
+    const coll = User.collection;
+    let indexes = [];
+    try { indexes = await coll.indexes(); } catch (e) {}
+    const emailIdx = indexes.find((i) => i.key && i.key.email === 1);
+    // Drop the old non-sparse unique index so we can null placeholders + go sparse.
+    if (emailIdx && !emailIdx.sparse) {
+      try { await coll.dropIndex(emailIdx.name); console.log('[migrate] dropped old non-sparse email index'); }
+      catch (e) { console.log('[migrate] dropIndex email:', e.message); }
+    }
+    const r = await coll.updateMany({ email: { $regex: /@fitai\.(local|temp)$/i } }, { $unset: { email: '' } });
+    await coll.updateMany({ email: '' }, { $unset: { email: '' } });
+    if (r.modifiedCount) console.log(`[migrate] cleared ${r.modifiedCount} placeholder emails`);
+    try { await coll.createIndex({ email: 1 }, { unique: true, sparse: true }); }
+    catch (e) { console.log('[migrate] createIndex email:', e.message); }
+    console.log('[migrate] user email migration done');
+  } catch (e) { console.log('[migrate] user email migration error:', e.message); }
+};
+
 const startServer = async () => {
   await connectDB();
+  await migrateUserEmails();
   await autoSeedArticles();
   startCalorieCheckScheduler();
   app.listen(PORT, () => {

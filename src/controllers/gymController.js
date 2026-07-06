@@ -382,9 +382,8 @@ exports.addMember = async (req, res, next) => {
       user = await User.create({
         name: name || 'Member',
         phone,
-        email: `g_${phone}_${Date.now()}@fitai.local`, // placeholder, unique
+        // No email for phone-only members — it stays empty until the member sets it.
         role: 'user',
-        // avatar: avatar || '', // OLD: base64 straight to DB
         avatar: avatarUrl || '',
       });
     } else if (avatar && !user.avatar) {
@@ -432,9 +431,8 @@ exports.addStaff = async (req, res, next) => {
     if (!user) {
       user = await User.create({
         name: name || 'Staff', phone: cleanPhone,
-        email: `s_${cleanPhone}_${Date.now()}@fitai.local`,
+        // No placeholder email — stays empty until the staff sets one.
         role: 'gym_staff', staffGym: gymId, staffRole, staffSalary: salary,
-        // staffJoinDate: new Date(), avatar: avatar || '', // OLD: base64
         staffJoinDate: new Date(), avatar: avatarUrl || '',
       });
     } else {
@@ -1822,8 +1820,8 @@ exports.gymPublicRegister = async (req, res) => {
     const avatarUrl = await uploadAvatar(avatar);
     let user = await User.findOne({ phone }); // double-check (race)
     if (!user) {
-      // user = await User.create({ ..., avatar }); // OLD: base64
-      user = await User.create({ name, phone, email: cleanEmail || `g_${phone}_${Date.now()}@fitai.local`, role: 'user', avatar: avatarUrl });
+      // Only set email if the user actually provided a real one; else leave empty.
+      user = await User.create({ name, phone, ...(cleanEmail ? { email: cleanEmail } : {}), role: 'user', avatar: avatarUrl });
     } else if (avatar && !user.avatar) {
       // try { user.avatar = avatar; await user.save(); } catch (e) {} // OLD: base64
       try { user.avatar = avatarUrl; await user.save(); } catch (e) {}
@@ -1844,7 +1842,7 @@ exports.webCheckIn = async (req, res, next) => {
     if (!gym) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
     if (isGymSuspended(gym)) return res.status(403).json({ success: false, message: GYM_SUSPENDED_MEMBER, suspended: true });
     let user = await User.findOne({ phone });
-    if (!user) user = await User.create({ name: req.body.name || 'Member', phone, email: `g_${phone}_${Date.now()}@fitai.local`, role: 'user' });
+    if (!user) user = await User.create({ name: req.body.name || 'Member', phone, role: 'user' });
     const r = await attendUser(gym, user);
     res.json({ success: true, message: r.closed ? `${r.isNew ? 'Registered! ' : ''}${gym.name} is closed now — attendance is marked only during gym hours.` : `Welcome ${user.name}!`, gym: gym.name, duplicate: r.duplicate, closed: !!r.closed });
   } catch (e) { next(e); }
