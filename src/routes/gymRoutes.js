@@ -33,6 +33,7 @@ router.get('/:gymId/member/:membershipId', c.getMemberDetail); // full member de
 router.delete('/member/:membershipId', ownerOnly, c.deleteMember); // remove a member (owner only — staff blocked)
 router.put('/member/:membershipId/status', c.setMemberStatus); // owner, or staff with canManageStatus
 router.put('/member/:membershipId/duedate', c.setMemberDueDate); // change next due date (owner / staff with canMarkPayment)
+router.put('/member/:membershipId/photo', c.updateMemberPhoto); // edit member photo (owner / staff with canAddMember)
 router.post('/payment', c.markPayment);              // mark cash payment
 router.post('/attendance', c.markAttendance);        // staff scans member QR
 router.get('/:gymId/dashboard', c.getGymDashboard);  // stats

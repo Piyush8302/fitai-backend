@@ -753,6 +753,26 @@ exports.getMemberDetail = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Owner/staff updates a member's profile photo from the member detail page.
+//        Owner always; staff needs canAddMember (member management). Uploads to
+//        Cloudinary (falls back to base64 if not configured).
+exports.updateMemberPhoto = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const { avatar } = req.body;
+    if (!avatar) return res.status(400).json({ success: false, message: 'No photo provided' });
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canAddMember')) return denyStaff(res, 'edit member photos');
+    if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
+
+    const avatarUrl = await uploadAvatar(avatar);
+    await User.findByIdAndUpdate(membership.user, { avatar: avatarUrl || '' });
+    res.json({ success: true, message: 'Photo updated', data: { avatar: avatarUrl || '' } });
+  } catch (e) { next(e); }
+};
+
 // @desc  Mark a payment (cash collected offline)
 exports.markPayment = async (req, res, next) => {
   try {
@@ -762,6 +782,14 @@ exports.markPayment = async (req, res, next) => {
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canMarkPayment')) return denyStaff(res, 'mark payments');
     if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
+
+    // Block double-marking: if the member is already paid (due date still in the
+    // future) don't let owner/staff mark payment again. Allowed only when the fee
+    // is actually due today or overdue. Pass allowRenew:true to override.
+    if (!req.body.allowRenew && membership.status === 'active' && membership.dueDate && new Date(membership.dueDate) > new Date()) {
+      const dueStr = new Date(membership.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      return res.status(400).json({ success: false, message: `Already paid — next due ${dueStr}. You can mark the next payment once it's due.`, alreadyPaid: true, dueDate: membership.dueDate });
+    }
 
     const months = periodMonths || PLAN_MONTHS[plan || membership.plan] || 1;
     const payment = await GymPayment.create({
