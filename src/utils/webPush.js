@@ -36,12 +36,15 @@ const sendWebPushToUsers = async (userIds, payload) => {
   if (!users.length) return;
 
   const body = JSON.stringify(payload);
+  // urgency:high wakes Android out of doze so banners arrive immediately
+  // (default 'normal' can be delayed/coalesced when the device is idle).
+  const opts = { TTL: 24 * 3600, urgency: 'high' };
   for (const u of users) {
     const dead = [];
     await Promise.all(
       (u.webPushSubscriptions || []).map(async (sub) => {
         try {
-          await webpush.sendNotification(sub, body);
+          await webpush.sendNotification(sub, body, opts);
         } catch (e) {
           if (e.statusCode === 404 || e.statusCode === 410) dead.push(sub.endpoint);
           else console.log('web push error:', e.statusCode || e.message);
