@@ -450,6 +450,29 @@ exports.addStaff = async (req, res, next) => {
       if (!user.staffJoinDate) user.staffJoinDate = new Date();
       await user.save();
     }
+    // Welcome the new staff + tell the rest of the team (in-app + push + web).
+    try {
+      const gymDoc = await Gym.findById(gymId).select('name');
+      const gName = gymDoc?.name || 'the gym';
+      const av = user.avatar ? String(user.avatar) : '';
+      const imageUrl = av.startsWith('http') ? av
+        : (av.startsWith('data:') ? `${PUBLIC_BASE_URL}/api/gym/avatar/${user._id}` : undefined);
+      await notifyUsers([user], {
+        title: `🎉 Welcome to ${gName} team!`,
+        body: `${user.name}, you've been added as ${user.staffRole || 'staff'} at ${gName}. Login with your phone to manage the gym.`,
+        type: 'success',
+        data: { kind: 'staff_added_self', screen: 'GymAdmin', gymId: String(gymId) },
+      });
+      notifyGymTeam(gymId, {
+        title: `👥 New staff — ${gName}`,
+        body: `${user.name}${user.phone ? ` (${user.phone})` : ''} joined as ${user.staffRole || 'staff'}.`,
+        type: 'info',
+        data: { kind: 'staff_added', gymId: String(gymId), staffId: String(user._id), avatar: user.avatar || undefined },
+        imageUrl,
+        excludeUserId: user._id, // the new staff already got their welcome
+      });
+    } catch (e) { console.log('staff add notify error:', e.message); }
+
     res.status(201).json({
       success: true,
       data: { _id: user._id, name: user.name, phone: user.phone, staffRole: user.staffRole, staffSalary: user.staffSalary, avatar: user.avatar },
