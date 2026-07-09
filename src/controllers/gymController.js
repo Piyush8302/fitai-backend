@@ -1554,7 +1554,19 @@ const phoneFormPage = (gym, lat, lng) => PAGE_SHELL(`
     <input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number" required autofocus/>
     <button type="submit">Continue</button>
   </form>
-  <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>`, gym.gymCode);
+  <p class="muted" style="text-align:center;margin-top:14px">Already a member? Just enter your number for instant check-in.<br/>New here? We'll ask your name on the next step.</p>
+  <script>
+  /* If the browser's password manager has the member's number saved (it survives
+     history/site-data clearing), restore it silently and check in without typing. */
+  try{if(navigator.credentials&&window.PasswordCredential){navigator.credentials.get({password:true,mediation:'silent'}).then(function(c){
+    if(c&&/^[0-9]{10}$/.test(c.id)){var f=document.querySelector('form');if(f&&f.phone&&!f.phone.value){f.phone.value=c.id;f.submit();}}
+  }).catch(function(){});}}catch(e){}
+  </script>`, gym.gymCode);
+
+// Save the member's number in the browser password manager after a successful
+// check-in — password-manager entries survive "clear browsing data", so the
+// member never re-types their number even after a history/cache wipe.
+const credStoreScript = (phone, name) => `<script>try{if(navigator.credentials&&window.PasswordCredential){navigator.credentials.store(new PasswordCredential({id:${JSON.stringify(String(phone))},password:'fitai-checkin',name:${JSON.stringify(String(name || 'Member'))}})).catch(function(){});}}catch(e){}</script>`;
 
 // New-person form (name + photo). Separate Camera & Gallery buttons so both work
 // across browsers (capture="environment" forces the camera).
@@ -1843,7 +1855,7 @@ exports.gymPublicSubmit = async (req, res) => {
       const r = await attendUser(gym, user);
       const hist = await attendanceHtml(gym, user);
       res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-      return res.send(attendPage(gym, r, user, 'Attendance marked. Have a great workout! 💪', hist));
+      return res.send(attendPage(gym, r, user, 'Attendance marked. Have a great workout! 💪', hist) + credStoreScript(phone, user.name));
     }
 
     // New person → ask for name + photo (email optional), phone + location carried hidden
@@ -1880,7 +1892,7 @@ exports.gymPublicRegister = async (req, res) => {
     const r = await attendUser(gym, user);
     const hist = await attendanceHtml(gym, user);
     res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
-    res.send(attendPage(gym, r, user, 'Registered & attendance marked! Pay your fee at the counter.', hist));
+    res.send(attendPage(gym, r, user, 'Registered & attendance marked! Pay your fee at the counter.', hist) + credStoreScript(phone, user.name));
   } catch (e) { res.status(500).send(PAGE_SHELL(`<div class="ok"><div class="big">❌</div><h1>Failed</h1><p class="muted">Please try again.</p></div>`)); }
 };
 
