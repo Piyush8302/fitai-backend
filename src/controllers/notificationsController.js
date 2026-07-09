@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { sendExpoPush } = require('../utils/push');
+const { sendWebPushToUsers } = require('../utils/webPush');
 
 // ===== DAILY CALORIE TARGET CHECK (runs via server.js scheduler at ~9 PM IST) =====
 // Compares each user's caloriesConsumed vs goal-adjusted target and pushes
@@ -62,6 +63,7 @@ exports.runDailyCalorieCheck = async () => {
 
         await Notification.create({ user: user._id, title, body, type, data: { screen: 'Tracking' } });
         await sendExpoPush([user.expoPushToken], title, body, { screen: 'Tracking' });
+        await sendWebPushToUsers([user._id], { title, body, data: { screen: 'Tracking' } }).catch(() => {});
         sent++;
       } catch (e) { /* skip user on error */ }
     }
@@ -119,6 +121,7 @@ const sendFeeReminderForMembership = async (m) => {
   const { title, body } = feeReminderText(gymName, u.name, m.dueDate, m.fee);
   await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
   if (u.expoPushToken) await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
+  await sendWebPushToUsers([u._id], { title, body, data: { screen: 'MyGymCard', kind: 'gym_fee' } }).catch(() => {});
   return true;
 };
 
@@ -294,6 +297,7 @@ exports.sendNotification = async (req, res, next) => {
       await Notification.insertMany(users.map(u => ({ user: u._id, title, body: notifBody, type: notifType, data })));
       const pushTokens = users.map(u => u.expoPushToken).filter(Boolean);
       if (pushTokens.length > 0) await sendExpoPush(pushTokens, title, notifBody, data);
+      await sendWebPushToUsers(users.map(u => u._id), { title, body: notifBody, data }).catch(() => {});
       return res.status(201).json({ success: true, message: `Sent to ${users.length} ${label} (${pushTokens.length} push)` });
     }
 
@@ -312,6 +316,7 @@ exports.sendNotification = async (req, res, next) => {
 
     const notification = await Notification.create({ user: targetUser._id, title, body: notifBody, type: notifType, data });
     if (targetUser.expoPushToken) await sendExpoPush([targetUser.expoPushToken], title, notifBody, data);
+    await sendWebPushToUsers([targetUser._id], { title, body: notifBody, data }).catch(() => {});
 
     res.status(201).json({ success: true, data: notification });
   } catch (error) {
@@ -351,6 +356,7 @@ exports.sendDailyTip = async (req, res, next) => {
     if (pushTokens.length > 0) {
       await sendExpoPush(pushTokens, tip.title, tip.body);
     }
+    await sendWebPushToUsers(users.map(u => u._id), { title: tip.title, body: tip.body }).catch(() => {});
 
     res.json({ success: true, message: `Tip sent to ${users.length} users (${pushTokens.length} push)`, tip });
   } catch (error) {

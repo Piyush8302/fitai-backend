@@ -233,6 +233,7 @@ exports.toggleGymActive = async (req, res, next) => {
           : 'Your gym has been suspended by FitAI admin. Open the gym in the app to request reactivation.';
         await Notification.create({ user: owner._id, title, body, type: gym.isActive ? 'success' : 'warning', data: { kind: 'gym_status', screen: 'GymAdmin' } });
         if (owner.expoPushToken) await sendExpoPush([owner.expoPushToken], title, body, { screen: 'GymAdmin' });
+        await require('../utils/webPush').sendWebPushToUsers([owner._id], { title, body, data: { kind: 'gym_status', screen: 'GymAdmin' } }).catch(() => {});
       }
     } catch (e) { console.log('gym status notify error:', e.message); }
 
