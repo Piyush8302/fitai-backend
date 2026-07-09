@@ -1065,7 +1065,7 @@ exports.getGymAttendance = async (req, res, next) => {
     const filter = { gym: gymId };
     if (day) filter.day = day;
     if (userId) filter.user = userId;
-    const list = await GymAttendance.find(filter).populate('user', 'name phone').sort({ checkInAt: -1 }).limit(200);
+    const list = await GymAttendance.find(filter).populate('user', 'name phone avatar').sort({ checkInAt: -1 }).limit(200);
 
     // Count this month's check-ins (useful when filtering by member)
     const monthStart = new Date();
