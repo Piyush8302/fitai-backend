@@ -52,6 +52,9 @@ const userSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true },
   fcmToken: { type: String },
   expoPushToken: { type: String },
+  // Web Push (owner PWA) — one entry per browser/device the user enabled
+  // notifications on: { endpoint, keys: { p256dh, auth } }.
+  webPushSubscriptions: { type: [mongoose.Schema.Types.Mixed], default: [] },
   otp: { type: String, select: false },
   otpExpiry: { type: Date, select: false },
   pendingEmail: { type: String },

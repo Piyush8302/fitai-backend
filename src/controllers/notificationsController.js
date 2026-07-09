@@ -357,3 +357,44 @@ exports.sendDailyTip = async (req, res, next) => {
     next(error);
   }
 };
+
+// ===== WEB PUSH (owner PWA — fitai-owner-web) =====
+
+// @desc  Public VAPID key for the browser to subscribe with
+exports.webPushKey = async (req, res) => {
+  const { getPublicKey } = require('../utils/webPush');
+  const key = getPublicKey();
+  if (!key) return res.status(503).json({ success: false, message: 'Web push not configured' });
+  res.json({ success: true, key });
+};
+
+// @desc  Save a browser push subscription on the logged-in user (dedupe by
+//        endpoint; a device-endpoint belongs to ONE user — same rule as the
+//        Expo token — so it is cleared from everyone else first).
+exports.webPushSubscribe = async (req, res, next) => {
+  try {
+    const sub = req.body.subscription;
+    if (!sub || !sub.endpoint || !sub.keys) return res.status(400).json({ success: false, message: 'Valid subscription required' });
+    await User.updateMany(
+      { _id: { $ne: req.user.id } },
+      { $pull: { webPushSubscriptions: { endpoint: sub.endpoint } } }
+    );
+    // Replace any stale copy of this endpoint, then add fresh (max 5 devices)
+    await User.updateOne({ _id: req.user.id }, { $pull: { webPushSubscriptions: { endpoint: sub.endpoint } } });
+    await User.updateOne(
+      { _id: req.user.id },
+      { $push: { webPushSubscriptions: { $each: [{ endpoint: sub.endpoint, keys: sub.keys }], $slice: -5 } } }
+    );
+    res.json({ success: true, message: 'Web push enabled' });
+  } catch (e) { next(e); }
+};
+
+// @desc  Remove a browser push subscription
+exports.webPushUnsubscribe = async (req, res, next) => {
+  try {
+    const endpoint = req.body.endpoint || (req.body.subscription && req.body.subscription.endpoint);
+    if (!endpoint) return res.status(400).json({ success: false, message: 'endpoint required' });
+    await User.updateOne({ _id: req.user.id }, { $pull: { webPushSubscriptions: { endpoint } } });
+    res.json({ success: true, message: 'Web push disabled' });
+  } catch (e) { next(e); }
+};

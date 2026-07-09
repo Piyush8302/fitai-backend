@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getNotifications, markRead, markAllRead, deleteNotification, getUnreadCount, sendNotification, sendDailyTip, savePushToken } = require('../controllers/notificationsController');
+const { getNotifications, markRead, markAllRead, deleteNotification, getUnreadCount, sendNotification, sendDailyTip, savePushToken, webPushKey, webPushSubscribe, webPushUnsubscribe } = require('../controllers/notificationsController');
 const { protect, admin } = require('../middleware/auth');
 
 /**
@@ -113,6 +113,10 @@ router.delete('/:id', protect, deleteNotification);
  *       201: { description: Notification sent }
  */
 router.post('/push-token', protect, savePushToken);
+// Web Push (owner PWA) — public key is safe to expose; subscribe needs login
+router.get('/web-push/key', webPushKey);
+router.post('/web-push/subscribe', protect, webPushSubscribe);
+router.post('/web-push/unsubscribe', protect, webPushUnsubscribe);
 router.post('/send', protect, admin, sendNotification);
 
 /**
