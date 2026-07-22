@@ -1,6 +1,6 @@
 const Notification = require('../models/Notification');
 const User = require('../models/User');
-const { sendExpoPush } = require('../utils/push');
+const { sendExpoPush, notifyUsers, avatarImageUrl } = require('../utils/push');
 const { sendWebPushToUsers } = require('../utils/webPush');
 
 // ===== DAILY CALORIE TARGET CHECK (runs via server.js scheduler at ~9 PM IST) =====
@@ -113,15 +113,19 @@ const feeReminderText = (gymName, userName, dueDate, fee) => {
 };
 
 // Send a single fee reminder (in-app always + push if a device token exists).
-// `m` must have populated gym {name} and user {name, expoPushToken}.
+// `m` must have populated gym {name} and user {name, avatar, expoPushToken}.
+// notifyUsers carries the member's own photo (data.avatar for in-app lists,
+// imageUrl for the push thumbnail) and strips base64 from push payloads.
 const sendFeeReminderForMembership = async (m) => {
   const u = m.user;
   if (!u?._id) return false;
   const gymName = m.gym?.name || 'Your gym';
   const { title, body } = feeReminderText(gymName, u.name, m.dueDate, m.fee);
-  await Notification.create({ user: u._id, title, body, type: 'reminder', data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee' } });
-  if (u.expoPushToken) await sendExpoPush([u.expoPushToken], title, body, { screen: 'MyGymCard' });
-  await sendWebPushToUsers([u._id], { title, body, data: { screen: 'MyGymCard', kind: 'gym_fee' } }).catch(() => {});
+  await notifyUsers([u], {
+    title, body, type: 'reminder',
+    data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee', memberName: u.name, avatar: u.avatar || undefined },
+    imageUrl: avatarImageUrl(u._id, u.avatar),
+  });
   return true;
 };
 
@@ -131,7 +135,7 @@ const sendFeeReminderForMembership = async (m) => {
 exports.remindMemberNow = async (membershipId) => {
   try {
     const Membership = require('../models/Membership');
-    const m = await Membership.findById(membershipId).populate('gym', 'name').populate('user', 'name expoPushToken');
+    const m = await Membership.findById(membershipId).populate('gym', 'name').populate('user', 'name avatar expoPushToken');
     if (!m) return false;
     if (m.fee <= 0 || ['trial', 'day_pass'].includes(m.plan) || m.status !== 'active') return false;
     if (!inFeeReminderWindow(m.dueDate)) return false;
@@ -152,10 +156,51 @@ exports.runGymFeeReminders = async () => {
       plan: { $nin: ['trial', 'day_pass'] },
       status: 'active',
       dueDate: { $lte: threeDays, $gte: overdueCap },
-    }).populate('gym', 'name').populate('user', 'name expoPushToken');
+    }).populate('gym', 'name owner').populate('user', 'name avatar expoPushToken');
 
     let sent = 0;
     for (const m of memberships) { if (await sendFeeReminderForMembership(m)) sent++; }
+
+    // ===== Owner/team digest: one "unpaid fees" summary per gym, so the owner
+    // knows who hasn't paid (the reminders above only go to the members).
+    // Same cadence as member reminders (10 AM & 6 PM IST). Tap opens the fees
+    // list (mobile: GymFees screen, web PWA: /fees).
+    try {
+      const istMidnight = (d) => {
+        const t = new Date(new Date(d).getTime() + 5.5 * 3600 * 1000);
+        return Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+      };
+      const today0 = istMidnight(new Date());
+      const byGym = new Map();
+      for (const m of memberships) {
+        if (!m.gym?._id || !m.gym.owner) continue;
+        const key = String(m.gym._id);
+        const g = byGym.get(key) || { name: m.gym.name, owner: m.gym.owner, overdue: 0, today: 0, soon: 0, pending: 0 };
+        const diff = Math.round((istMidnight(m.dueDate) - today0) / DAY_MS);
+        if (diff < 0) { g.overdue++; g.pending += m.fee || 0; }
+        else if (diff === 0) { g.today++; g.pending += m.fee || 0; }
+        else g.soon++;
+        byGym.set(key, g);
+      }
+      for (const [gymId, g] of byGym) {
+        const parts = [];
+        if (g.overdue) parts.push(`${g.overdue} overdue`);
+        if (g.today) parts.push(`${g.today} due today`);
+        if (g.soon) parts.push(`${g.soon} due in 3 days`);
+        if (!parts.length) continue;
+        const [owner, staff] = await Promise.all([
+          User.findById(g.owner).select('_id expoPushToken'),
+          User.find({ role: 'gym_staff', staffGym: gymId }).select('_id expoPushToken'),
+        ]);
+        await notifyUsers([owner, ...staff].filter(Boolean), {
+          title: `💰 Unpaid fees — ${g.name}`,
+          body: `${parts.join(', ')}${g.pending ? ` · ₹${g.pending} to collect` : ''}. Tap to see the list.`,
+          type: 'reminder',
+          data: { kind: 'fee_digest', screen: 'GymFees', gymId, gymName: g.name },
+        });
+      }
+    } catch (e) { console.log('[GymFeeReminder] digest error:', e.message); }
+
     console.log(`[GymFeeReminder] processed ${sent} reminders`);
     return sent;
   } catch (e) {
