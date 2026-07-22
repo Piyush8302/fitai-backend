@@ -7,7 +7,7 @@ const GymPayment = require('../models/GymPayment');
 const GymCashbook = require('../models/GymCashbook');
 const StaffAttendance = require('../models/StaffAttendance');
 const User = require('../models/User');
-const { notifyUsers } = require('../utils/push');
+const { notifyUsers, avatarImageUrl } = require('../utils/push');
 const { uploadAvatar } = require('../utils/cloudinary');
 
 // ---- helpers ----
@@ -122,7 +122,7 @@ const announceNewMember = (gymId, gymName, member = {}, excludeUserId) => {
 };
 
 // "Payment received" notification for a gym's team (with member's photo).
-const announcePayment = (gymId, gymName, member = {}, amount, planLabel, excludeUserId) => {
+const announcePayment = (gymId, gymName, member = {}, amount, planLabel, method, excludeUserId) => {
   // Push thumbnail: a Cloudinary URL is used directly; a base64 avatar is served
   // via /api/gym/avatar/:id (legacy). No photo → no thumbnail.
   const av = member.avatar ? String(member.avatar) : '';
@@ -130,9 +130,17 @@ const announcePayment = (gymId, gymName, member = {}, amount, planLabel, exclude
     : (av.startsWith('data:') && member.id ? `${PUBLIC_BASE_URL}/api/gym/avatar/${member.id}` : undefined);
   return notifyGymTeam(gymId, {
     title: `💵 Payment received — ${gymName || 'your gym'}`,
-    body: `${member.name || 'A member'} paid ₹${amount}${planLabel ? ` (${planLabel})` : ''}. ✅`,
+    body: `${member.name || 'A member'} paid ₹${amount}${planLabel ? ` (${planLabel})` : ''} via ${method === 'online' ? 'online' : 'cash'}. ✅`,
     type: 'success',
-    data: { kind: 'payment', gym: gymName, memberName: member.name, avatar: member.avatar || undefined, amount },
+    data: {
+      kind: 'payment',
+      method: method === 'online' ? 'online' : 'cash',
+      screen: member.membershipId ? 'GymMemberDetail' : 'GymAdmin',
+      gymId: String(gymId),
+      membershipId: member.membershipId ? String(member.membershipId) : undefined,
+      memberId: member.id ? String(member.id) : undefined,
+      gym: gymName, memberName: member.name, avatar: member.avatar || undefined, amount,
+    },
     imageUrl,
     excludeUserId,
   });
@@ -165,18 +173,21 @@ const announceDueDateChange = async ({ gym, membership, memberUser, dueDate, cha
     // → the member: in-app (bell / web) + push if the app is installed. Opens their
     //   gym card. Skipped when we've already sent them the actual fee reminder now
     //   (due date fell inside the reminder window) so they don't get two pings.
+    const imageUrl = avatarImageUrl(memberUser._id, memberUser.avatar);
     if (notifyMember) await notifyUsers([memberUser], {
       title: `🏋️ ${gymName}`,
       body: `Your next fee due date is now ${dueStr}. Please pay on or before this date. 🙏`,
       type: 'reminder',
-      data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_due_update', dueDate: new Date(dueDate).toISOString() },
+      data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_due_update', dueDate: new Date(dueDate).toISOString(), avatar: memberUser.avatar || undefined },
+      imageUrl,
     });
     // → owner + all staff (skip whoever made the change). Opens the member's detail.
     await notifyGymTeam(gym._id, {
       title: `📅 Due date updated — ${gymName}`,
       body: `${memberUser.name || 'A member'}'s next fee due date set to ${dueStr}${note ? ` (${note})` : ''}.`,
       type: 'info',
-      data: { kind: 'due_update', screen: 'GymMemberDetail', gymId: String(gym._id), membershipId: membership ? String(membership._id) : undefined, memberId: String(memberUser._id) },
+      data: { kind: 'due_update', screen: 'GymMemberDetail', gymId: String(gym._id), membershipId: membership ? String(membership._id) : undefined, memberId: String(memberUser._id), memberName: memberUser.name, avatar: memberUser.avatar || undefined },
+      imageUrl,
       excludeUserId: changedBy,
     });
   } catch (e) { console.log('announceDueDateChange error:', e.message); }
@@ -796,10 +807,13 @@ exports.updateMemberPhoto = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-// @desc  Mark a payment (cash collected offline)
+// @desc  Mark a payment (cash collected at the counter, or paid online)
 exports.markPayment = async (req, res, next) => {
   try {
     const { membershipId, amount, plan, periodMonths, dueDate } = req.body;
+    // Anything other than an explicit 'online' is cash — keeps old app builds,
+    // which don't send this field at all, working exactly as before.
+    const method = req.body.method === 'online' ? 'online' : 'cash';
     const membership = await Membership.findById(membershipId);
     if (!membership) return res.status(404).json({ success: false, message: 'Membership not found' });
     if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
@@ -817,7 +831,7 @@ exports.markPayment = async (req, res, next) => {
     const months = periodMonths || PLAN_MONTHS[plan || membership.plan] || 1;
     const payment = await GymPayment.create({
       user: membership.user, gym: membership.gym, membership: membership._id,
-      amount, plan: plan || membership.plan, periodMonths: months, markedBy: req.user.id,
+      amount, plan: plan || membership.plan, periodMonths: months, method, markedBy: req.user.id,
     });
 
     const finalPlan = plan || membership.plan;
@@ -846,7 +860,8 @@ exports.markPayment = async (req, res, next) => {
           ? `Payment of ₹${amount} received ✅ Your next fee is due ${dueStr}. Keep it up! 💪`
           : `Your membership is updated. Next fee due ${dueStr}.`,
         type: 'success',
-        data: { screen: 'MyGymCard', gym: gym?.name, kind: 'gym_payment', dueDate: new Date(membership.dueDate).toISOString() },
+        data: { screen: 'MyGymCard', gym: gym?.name, kind: 'gym_payment', dueDate: new Date(membership.dueDate).toISOString(), avatar: member?.avatar || undefined },
+        imageUrl: avatarImageUrl(membership.user, member?.avatar),
       });
     } catch (e) { console.log('member payment notify error:', e.message); }
 
@@ -854,11 +869,11 @@ exports.markPayment = async (req, res, next) => {
     if (amount > 0) {
       await GymCashbook.create({
         gym: membership.gym, type: 'income', amount,
-        description: `Membership: ${member?.name || 'Member'}`,
-        source: 'membership', payment: payment._id, createdBy: req.user.id,
+        description: `Membership: ${member?.name || 'Member'} (${method === 'online' ? 'Online' : 'Cash'})`,
+        source: 'membership', method, payment: payment._id, createdBy: req.user.id,
       });
       // Notify owner + staff (skip whoever recorded the payment) with the member's photo
-      announcePayment(membership.gym, gym?.name, { id: membership.user, name: member?.name, phone: member?.phone, avatar: member?.avatar }, amount, finalPlan, req.user.id);
+      announcePayment(membership.gym, gym?.name, { id: membership.user, membershipId: membership._id, name: member?.name, phone: member?.phone, avatar: member?.avatar }, amount, finalPlan, method, req.user.id);
     }
 
     res.status(201).json({ success: true, data: { payment, membership } });
@@ -1084,7 +1099,8 @@ exports.addCashEntry = async (req, res, next) => {
     const { gymId, type, amount, description, date } = req.body;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!['income', 'expense'].includes(type) || !amount) return res.status(400).json({ success: false, message: 'type and amount required' });
-    const entry = await GymCashbook.create({ gym: gymId, type, amount, description, date: date || new Date(), createdBy: req.user.id });
+    const method = req.body.method === 'online' ? 'online' : 'cash';
+    const entry = await GymCashbook.create({ gym: gymId, type, amount, description, method, date: date || new Date(), createdBy: req.user.id });
     res.status(201).json({ success: true, data: entry });
   } catch (e) { next(e); }
 };

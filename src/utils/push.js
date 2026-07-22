@@ -1,6 +1,17 @@
 // Shared push-notification helper (Expo). Used by notifications + gym modules.
 const Notification = require('../models/Notification');
 
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://fitai-backend-icbh.onrender.com';
+
+// Photo URL for a push thumbnail: a Cloudinary URL is used as-is; a legacy
+// base64 avatar is served via /api/gym/avatar/:userId; no avatar → undefined.
+const avatarImageUrl = (userId, avatar) => {
+  const av = avatar ? String(avatar) : '';
+  if (av.startsWith('http')) return av;
+  if (av.startsWith('data:') && userId) return `${PUBLIC_BASE_URL}/api/gym/avatar/${userId}`;
+  return undefined;
+};
+
 // Low-level: send raw Expo push messages to a list of tokens.
 // `imageUrl` (optional) shows a big picture in the push (Android; iOS needs a
 // Notification Service Extension in the native build to render it).
@@ -79,4 +90,4 @@ const notifyUsers = async (recipients, { title, body, type = 'info', data = {}, 
   }
 };
 
-module.exports = { sendExpoPush, notifyUsers };
+module.exports = { sendExpoPush, notifyUsers, avatarImageUrl };
