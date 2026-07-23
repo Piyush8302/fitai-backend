@@ -44,7 +44,9 @@ async function uploadAvatar(input) {
   if (!configured) return input;                      // legacy base64 fallback
   try {
     const res = await cloudinary.uploader.upload(input, {
-      folder: 'fitai/avatars',
+      // Staging sets CLOUDINARY_FOLDER=fitai-staging/avatars so its test images
+      // sit apart from production's; unset (production) keeps the original path.
+      folder: process.env.CLOUDINARY_FOLDER || 'fitai/avatars',
       resource_type: 'image',
       // Keep it small & cheap on the free tier
       transformation: [{ width: 400, height: 400, crop: 'limit', quality: 'auto', fetch_format: 'auto' }],
