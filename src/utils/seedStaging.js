@@ -22,6 +22,9 @@ const Membership = require('../models/Membership');
 
 const OWNER_PHONE = '9000000001';
 const STAFF_PHONE = '9000000002';
+// Super-admin for the admin panel (email + password login). Test-only creds.
+const ADMIN_EMAIL = 'admin@fitai.test';
+const ADMIN_PASSWORD = 'admin12345';
 
 const DAY = 24 * 3600 * 1000;
 const daysFromNow = (n) => new Date(Date.now() + n * DAY);
@@ -48,6 +51,18 @@ async function run() {
   const host = mongoose.connection.host;
   console.log(`✅ Connected: ${host}`);
   console.log(`   DB name: ${mongoose.connection.name}\n`);
+
+  // Super-admin (admin panel login). Password is hashed by the User pre-save hook.
+  let admin = await User.findOne({ email: ADMIN_EMAIL });
+  if (!admin) {
+    admin = await User.create({
+      name: 'Staging Admin', email: ADMIN_EMAIL, password: ADMIN_PASSWORD,
+      role: 'admin', authProvider: 'local', isProfileComplete: true,
+    });
+    console.log(`✅ Admin created — ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
+  } else {
+    console.log(`• Admin already exists — ${ADMIN_EMAIL}`);
+  }
 
   // Owner
   let owner = await User.findOne({ phone: OWNER_PHONE });
@@ -105,9 +120,9 @@ async function run() {
   }
   console.log(`✅ Members ready — ${made} new, ${MEMBERS.length} total\n`);
 
-  console.log('🎉 Staging seed done. Log in on the owner web app:');
-  console.log(`   Owner phone: ${OWNER_PHONE}   Staff phone: ${STAFF_PHONE}`);
-  console.log('   (NODE_ENV=development → OTP is returned in the send-otp response)\n');
+  console.log('🎉 Staging seed done.');
+  console.log(`   Owner web  → phone ${OWNER_PHONE} / staff ${STAFF_PHONE} (OTP in send-otp response / Render logs)`);
+  console.log(`   Admin panel → ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}\n`);
   process.exit(0);
 }
 
