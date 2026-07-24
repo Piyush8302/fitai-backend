@@ -169,8 +169,10 @@ const autoSeedArticles = async () => {
   }
 };
 
-// Notification schedulers (IST). Calorie check 9 PM; gym fee reminders 10 AM & 6 PM.
+// Notification schedulers (IST). Calorie check 9 PM; gym fee reminders 10 AM &
+// 6 PM; "missed the gym today" nudge 8 PM (early enough to still go).
 let lastCalorieCheckDate = null;
+let lastMissedGymDate = null;
 const lastGymReminder = {}; // { '10': 'YYYY-MM-DD', '18': 'YYYY-MM-DD' }
 const startCalorieCheckScheduler = () => {
   setInterval(async () => {
@@ -191,6 +193,11 @@ const startCalorieCheckScheduler = () => {
           lastGymReminder[slot] = today;
           await notif.runGymFeeReminders();
         }
+      }
+      // "Missed the gym today" nudge — 8 PM IST, so there's still time to go
+      if (hour === 20 && lastMissedGymDate !== today) {
+        lastMissedGymDate = today;
+        await notif.runMissedGymReminders();
       }
     } catch (e) { console.log('Scheduler error:', e.message); }
   }, 10 * 60 * 1000); // check every 10 minutes
