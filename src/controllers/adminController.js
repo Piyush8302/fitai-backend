@@ -241,6 +241,138 @@ exports.toggleGymActive = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// @desc  Permanently delete a gym and everything scoped to it (members' gym
+//        links, payments, attendance, cashbook). The people themselves keep
+//        their accounts — only their link to THIS gym goes away.
+exports.deleteGym = async (req, res, next) => {
+  try {
+    const Membership = require('../models/Membership');
+    const GymPayment = require('../models/GymPayment');
+    const GymAttendance = require('../models/GymAttendance');
+    const GymCashbook = require('../models/GymCashbook');
+    const StaffAttendance = require('../models/StaffAttendance');
+
+    const gym = await Gym.findById(req.params.id);
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+    const gymName = gym.name;
+
+    const [members, payments, attendance, cashbook] = await Promise.all([
+      Membership.deleteMany({ gym: gym._id }),
+      GymPayment.deleteMany({ gym: gym._id }),
+      GymAttendance.deleteMany({ gym: gym._id }),
+      GymCashbook.deleteMany({ gym: gym._id }),
+      StaffAttendance.deleteMany({ gym: gym._id }).catch(() => ({})),
+    ]);
+    // Staff of this gym become ordinary users again (accounts are kept).
+    await User.updateMany(
+      { role: 'gym_staff', staffGym: gym._id },
+      { $set: { role: 'user' }, $unset: { staffGym: 1, staffRole: 1 } }
+    );
+    await gym.deleteOne();
+
+    // Let the owner know their gym is gone (in-app + push).
+    try {
+      const owner = await User.findById(gym.owner).select('_id expoPushToken');
+      if (owner) {
+        const Notification = require('../models/Notification');
+        const { sendExpoPush } = require('../utils/push');
+        const title = `🗑️ ${gymName} removed`;
+        const body = 'This gym has been permanently removed by FitAI admin. Contact support if this was unexpected.';
+        await Notification.create({ user: owner._id, title, body, type: 'warning', data: { kind: 'gym_deleted' } });
+        if (owner.expoPushToken) await sendExpoPush([owner.expoPushToken], title, body, {});
+        await require('../utils/webPush').sendWebPushToUsers([owner._id], { title, body, data: { kind: 'gym_deleted' } }).catch(() => {});
+      }
+    } catch (e) { console.log('gym delete notify error:', e.message); }
+
+    res.json({
+      success: true,
+      message: `"${gymName}" deleted`,
+      data: {
+        memberships: members.deletedCount || 0, payments: payments.deletedCount || 0,
+        attendance: attendance.deletedCount || 0, cashbook: cashbook.deletedCount || 0,
+      },
+    });
+  } catch (e) { next(e); }
+};
+
+// @desc  Permanently delete a user and their personal data.
+//        Gym PAYMENTS are deliberately kept — they are the gym's financial
+//        record, not the member's, and removing them would rewrite its books.
+exports.deleteUser = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (String(user._id) === String(req.user.id)) {
+      return res.status(400).json({ success: false, message: 'You cannot delete your own admin account' });
+    }
+    if (user.role === 'admin') {
+      return res.status(400).json({ success: false, message: 'Admin accounts cannot be deleted' });
+    }
+    // An owner's gyms must go first, else the gym, its members and its ledger
+    // would be left with no owner.
+    const owned = await Gym.countDocuments({ owner: user._id });
+    if (owned > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `This user owns ${owned} gym${owned > 1 ? 's' : ''}. Delete the gym${owned > 1 ? 's' : ''} first, then the account.`,
+      });
+    }
+
+    const name = user.name || 'User';
+    const Membership = require('../models/Membership');
+    const GymAttendance = require('../models/GymAttendance');
+    const Notification = require('../models/Notification');
+    const ChatMessage = require('../models/ChatMessage');
+    const Favorite = require('../models/Favorite');
+    const Achievement = require('../models/Achievement');
+    await Promise.all([
+      Membership.deleteMany({ user: user._id }),
+      GymAttendance.deleteMany({ user: user._id }),
+      Tracking.deleteMany({ user: user._id }),
+      Subscription.deleteMany({ user: user._id }),
+      Notification.deleteMany({ user: user._id }),
+      ChatMessage.deleteMany({ user: user._id }),
+      Favorite.deleteMany({ user: user._id }),
+      Achievement.deleteMany({ user: user._id }),
+    ]);
+    await user.deleteOne();
+
+    res.json({ success: true, message: `${name} deleted permanently` });
+  } catch (e) { next(e); }
+};
+
+// Attach each user's gym links so the admin panel can show WHICH gym a person
+// belongs to. One user can appear as a member of some gyms, the owner of others,
+// and staff at one — so `gyms` is a list of { _id, name, gymCode, as }.
+// Takes and returns plain objects (call .lean() on the query).
+const attachGyms = async (users) => {
+  if (!users.length) return users;
+  const Membership = require('../models/Membership');
+  const ids = users.map((u) => u._id);
+  const staffGymIds = users.map((u) => u.staffGym).filter(Boolean);
+
+  const [memberships, ownedGyms, staffGyms] = await Promise.all([
+    Membership.find({ user: { $in: ids } }).select('user gym status').populate('gym', 'name gymCode').lean(),
+    Gym.find({ owner: { $in: ids } }).select('name gymCode owner').lean(),
+    staffGymIds.length ? Gym.find({ _id: { $in: staffGymIds } }).select('name gymCode').lean() : [],
+  ]);
+
+  const byUser = new Map(ids.map((id) => [String(id), []]));
+  for (const m of memberships) {
+    if (!m.gym) continue; // gym was deleted
+    byUser.get(String(m.user))?.push({ _id: m.gym._id, name: m.gym.name, gymCode: m.gym.gymCode, as: 'member', status: m.status });
+  }
+  for (const g of ownedGyms) {
+    byUser.get(String(g.owner))?.push({ _id: g._id, name: g.name, gymCode: g.gymCode, as: 'owner' });
+  }
+  const staffById = new Map(staffGyms.map((g) => [String(g._id), g]));
+  for (const u of users) {
+    const g = u.staffGym && staffById.get(String(u.staffGym));
+    if (g) byUser.get(String(u._id))?.push({ _id: g._id, name: g.name, gymCode: g.gymCode, as: 'staff' });
+  }
+  return users.map((u) => ({ ...u, gyms: byUser.get(String(u._id)) || [] }));
+};
+
 // @desc    Get all users
 exports.getUsers = async (req, res, next) => {
   try {
@@ -252,9 +384,9 @@ exports.getUsers = async (req, res, next) => {
     const total = await User.countDocuments(filter);
     const users = await User.find(filter)
       .skip((page - 1) * limit).limit(parseInt(limit))
-      .sort({ createdAt: -1 }).select('-password');
+      .sort({ createdAt: -1 }).select('-password').lean();
 
-    res.json({ success: true, count: users.length, total, page: parseInt(page), data: users });
+    res.json({ success: true, count: users.length, total, page: parseInt(page), data: await attachGyms(users) });
   } catch (error) {
     next(error);
   }
@@ -263,8 +395,9 @@ exports.getUsers = async (req, res, next) => {
 // @desc    Get user details
 exports.getUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select('-password -avatar');
+    const user = await User.findById(req.params.id).select('-password -avatar').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const [withGyms] = await attachGyms([user]);
 
     const ChatMessage = require('../models/ChatMessage');
     const [subscriptions, recentTracking, totalChatMessages, totalWorkoutDays] = await Promise.all([
@@ -274,7 +407,7 @@ exports.getUser = async (req, res, next) => {
       Tracking.countDocuments({ user: req.params.id, workoutCompleted: true }),
     ]);
 
-    res.json({ success: true, data: { user, subscriptions, recentTracking, totalChatMessages, totalWorkoutDays } });
+    res.json({ success: true, data: { user: withGyms, subscriptions, recentTracking, totalChatMessages, totalWorkoutDays } });
   } catch (error) {
     next(error);
   }
