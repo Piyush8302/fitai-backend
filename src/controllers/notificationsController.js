@@ -123,7 +123,8 @@ const sendFeeReminderForMembership = async (m) => {
   const { title, body } = feeReminderText(gymName, u.name, m.dueDate, m.fee);
   await notifyUsers([u], {
     title, body, type: 'reminder',
-    data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee', memberName: u.name, avatar: u.avatar || undefined },
+    // gymCode lets the member check-in PWA open their own gym page on tap.
+    data: { screen: 'MyGymCard', gym: gymName, gymCode: m.gym?.gymCode, kind: 'gym_fee', memberName: u.name, avatar: u.avatar || undefined },
     imageUrl: avatarImageUrl(u._id, u.avatar),
   });
   return true;
@@ -135,7 +136,7 @@ const sendFeeReminderForMembership = async (m) => {
 exports.remindMemberNow = async (membershipId) => {
   try {
     const Membership = require('../models/Membership');
-    const m = await Membership.findById(membershipId).populate('gym', 'name').populate('user', 'name avatar expoPushToken');
+    const m = await Membership.findById(membershipId).populate('gym', 'name gymCode').populate('user', 'name avatar expoPushToken');
     if (!m) return false;
     if (m.fee <= 0 || ['trial', 'day_pass'].includes(m.plan) || m.status !== 'active') return false;
     if (!inFeeReminderWindow(m.dueDate)) return false;
@@ -156,7 +157,7 @@ exports.runGymFeeReminders = async () => {
       plan: { $nin: ['trial', 'day_pass'] },
       status: 'active',
       dueDate: { $lte: threeDays, $gte: overdueCap },
-    }).populate('gym', 'name owner').populate('user', 'name avatar expoPushToken');
+    }).populate('gym', 'name gymCode owner').populate('user', 'name avatar expoPushToken');
 
     let sent = 0;
     for (const m of memberships) { if (await sendFeeReminderForMembership(m)) sent++; }
@@ -242,7 +243,7 @@ exports.runMissedGymReminders = async () => {
       gym: { $in: liveGymIds },
       status: 'active',
       plan: { $nin: ['trial', 'day_pass'] },
-    }).populate('gym', 'name').populate('user', 'name avatar expoPushToken');
+    }).populate('gym', 'name gymCode').populate('user', 'name avatar expoPushToken');
 
     let sent = 0;
     for (const m of memberships) {
@@ -262,7 +263,7 @@ exports.runMissedGymReminders = async () => {
           title: line.title,
           body: line.body(firstName),
           type: 'reminder',
-          data: { screen: 'MyGymCard', kind: 'missed_gym', gym: m.gym?.name, avatar: u.avatar || undefined },
+          data: { screen: 'MyGymCard', kind: 'missed_gym', gym: m.gym?.name, gymCode: m.gym?.gymCode, avatar: u.avatar || undefined },
           imageUrl: avatarImageUrl(u._id, u.avatar),
         });
         sent++;

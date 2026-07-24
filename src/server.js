@@ -70,6 +70,7 @@ app.get('/g/:gymCode/manifest.json', gymC.gymManifest);
 app.post('/g/:gymCode/checkin', gymC.gymGeoCheckin); // receives GPS, validates distance
 app.post('/g/:gymCode/submit', gymC.gymPublicSubmit);
 app.post('/g/:gymCode/register', gymC.gymPublicRegister);
+app.post('/g/push/subscribe', gymC.gymPushSubscribe);  // member PWA enables reminders (token-gated)
 
 // ===== PWA assets for the gym check-in page (installable web app) =====
 app.get('/gym-icon.svg', (req, res) => {
@@ -93,9 +94,31 @@ app.get('/gym-manifest.json', (req, res) => {
     ],
   });
 });
+// Service worker for the member check-in PWA. Also receives web push, so fee
+// reminders and the "missed the gym" nudge reach members who installed this
+// page instead of the mobile app. Tapping opens their own gym page.
 app.get('/gym-sw.js', (req, res) => {
   res.type('application/javascript').send(
-    `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>self.clients.claim());self.addEventListener('fetch',e=>{});`
+    `self.addEventListener('install',function(e){self.skipWaiting();});
+self.addEventListener('activate',function(e){self.clients.claim();});
+self.addEventListener('fetch',function(e){});
+self.addEventListener('push',function(e){
+  var p={};
+  try{p=e.data?e.data.json():{};}catch(_){p={title:'FitAI Gym',body:e.data?e.data.text():''};}
+  var photo=p.image||(p.data&&p.data.avatar)||null;
+  var o={body:p.body||'',icon:photo||'/gym-icon.svg',badge:'/gym-icon.svg',data:p.data||{}};
+  if(photo){o.image=photo;}
+  e.waitUntil(self.registration.showNotification(p.title||'FitAI Gym',o));
+});
+self.addEventListener('notificationclick',function(e){
+  e.notification.close();
+  var d=e.notification.data||{};
+  var url=d.gymCode?('/g/'+d.gymCode):'/';
+  e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function(ws){
+    for(var i=0;i<ws.length;i++){if('focus' in ws[i]){ws[i].focus();if('navigate' in ws[i]){ws[i].navigate(url);}return;}}
+    return self.clients.openWindow(url);
+  }));
+});`
   );
 });
 app.get('/gym-app.js', (req, res) => {
