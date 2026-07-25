@@ -1381,7 +1381,60 @@ const attendPage = (gym, r, user, okMsg, hist = '') => {
   const title = r.blocked ? 'Cannot check in'
     : r.closed ? 'Attendance NOT marked'
     : `Welcome ${esc(user.name)}!`;
-  return okPage(user.name, gym.name, attendMsg(gym, r, okMsg), gym.gymCode, hist, icon, title);
+  // Offer reminders here — the member is identified and standing in the gym,
+  // which is exactly when asking for notification permission makes sense.
+  return okPage(user.name, gym.name, attendMsg(gym, r, okMsg), gym.gymCode, hist + pushOptInHtml(gym, user), icon, title);
+};
+
+// "Turn on reminders" block for the check-in result page. Renders nothing when
+// web push isn't configured on the server, or on a browser that can't do push.
+// On iOS this only works from the INSTALLED app, so unsupported browsers are
+// told to install rather than shown a button that would fail.
+const pushOptInHtml = (gym, user) => {
+  const { getPublicKey } = require('../utils/webPush');
+  const key = getPublicKey();
+  if (!key) return '';
+  const token = mintPushToken(user._id);
+  return `
+<div id="pushBox" style="display:none;margin-top:20px;background:#151725;border:1px solid #363a5c;border-radius:14px;padding:16px;text-align:left">
+  <div style="font-size:14px;color:#fff;font-weight:700;margin-bottom:4px">🔔 Fee & workout reminders</div>
+  <div style="font-size:12px;color:#9092b0;line-height:1.5">Get your fee due date and a nudge on the days you miss the gym — right here, no app needed.</div>
+  <button id="pushBtn" type="button" style="margin-top:12px">Turn on reminders</button>
+  <div id="pushMsg" style="font-size:12px;color:#9092b0;margin-top:10px"></div>
+</div>
+<div id="pushInstall" style="display:none;margin-top:20px;background:#151725;border:1px solid #363a5c;border-radius:14px;padding:16px;text-align:left">
+  <div style="font-size:14px;color:#fff;font-weight:700;margin-bottom:4px">🔔 Want fee reminders here?</div>
+  <div style="font-size:12px;color:#9092b0;line-height:1.5">Install this page as an app first (button above), then check in once more — reminders will be offered.</div>
+</div>
+<script>
+(function(){
+  var box=document.getElementById('pushBox'),ins=document.getElementById('pushInstall');
+  var btn=document.getElementById('pushBtn'),msg=document.getElementById('pushMsg');
+  var supported=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
+  var isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  var standalone=(window.navigator.standalone===true)||(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);
+  // iOS hands out push only inside an installed PWA — don't show a dead button.
+  if(!supported||(isIOS&&!standalone)){ if(ins) ins.style.display='block'; return; }
+  if(Notification.permission==='granted'){ if(box){box.style.display='block';msg.textContent='Reminders are already on for this device.';btn.style.display='none';} return; }
+  if(Notification.permission==='denied'){ if(box){box.style.display='block';msg.textContent='Notifications are blocked in your browser settings.';btn.style.display='none';} return; }
+  box.style.display='block';
+  function b64(s){var p='='.repeat((4-s.length%4)%4);var b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));var o=new Uint8Array(b.length);for(var i=0;i<b.length;i++){o[i]=b.charCodeAt(i);}return o;}
+  btn.addEventListener('click',function(){
+    btn.disabled=true;msg.textContent='Please allow notifications…';
+    Notification.requestPermission().then(function(perm){
+      if(perm!=='granted'){btn.disabled=false;msg.textContent='Not allowed. You can turn it on any time.';return;}
+      return navigator.serviceWorker.register('/gym-sw.js').then(function(){return navigator.serviceWorker.ready;}).then(function(reg){
+        return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(${JSON.stringify(key)})});
+      }).then(function(sub){
+        return fetch('/g/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:${JSON.stringify(token)},subscription:sub})});
+      }).then(function(r){return r.json();}).then(function(j){
+        if(j&&j.success){msg.textContent='✅ Done! Reminders will come to this phone.';btn.style.display='none';}
+        else{btn.disabled=false;msg.textContent=(j&&j.message)||'Could not turn on reminders.';}
+      });
+    }).catch(function(){btn.disabled=false;msg.textContent='Could not turn on reminders. Try again.';});
+  });
+})();
+</script>`;
 };
 
 // Build a small "my recent attendance" block (this-month count + recent check-ins)
@@ -1465,6 +1518,15 @@ const readKioskToken = (token) => readToken(token, 'k');
 const SETLOC_TTL_MS = 20 * 60 * 1000; // owner has 20 min to set the gym location
 const mintSetlocToken = (gymCode) => mintToken(gymCode, 'l', SETLOC_TTL_MS);
 const readSetlocToken = (token) => readToken(token, 'l');
+// Push-subscribe token. Minted only right after a GPS-verified check-in and
+// carries that member's id, so a device can attach itself to ONE person's
+// notifications — and only the person actually standing in the gym.
+const PUSH_TTL_MS = 10 * 60 * 1000;
+const mintPushToken = (userId) => mintToken(String(userId), 'p', PUSH_TTL_MS);
+const readPushToken = (token) => {
+  const r = readToken(token, 'p');
+  return r.gymCode ? { userId: r.gymCode } : r; // readToken names the first field gymCode
+};
 
 // ===== GEOFENCE (static QR + GPS check so people can't check in from home) =====
 const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M) || 100;
@@ -1678,6 +1740,38 @@ const attendMsg = (gym, r, okMsg) => {
 
 // @desc  STEP 1 — phone-only page. Registered members just enter their number;
 //        new people are asked for a name on step 2. No cookie needed (works on iPhone).
+// @desc  Save a browser push subscription for a member of the check-in PWA.
+//        Public by necessity (members never log in here), so it is gated by the
+//        short-lived token minted at check-in rather than by a session.
+exports.gymPushSubscribe = async (req, res) => {
+  try {
+    const { token, subscription } = req.body || {};
+    const t = readPushToken(token);
+    if (t.expired) return res.status(400).json({ success: false, message: 'Link expired — check in again to enable reminders' });
+    if (!t.userId) return res.status(400).json({ success: false, message: 'Invalid token' });
+    if (!subscription || !subscription.endpoint || !subscription.keys) {
+      return res.status(400).json({ success: false, message: 'Valid subscription required' });
+    }
+    const user = await User.findById(t.userId).select('_id');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // A browser endpoint belongs to ONE person — clear it from everyone else
+    // first, so a shared phone never leaks another member's notifications.
+    await User.updateMany(
+      { _id: { $ne: user._id } },
+      { $pull: { webPushSubscriptions: { endpoint: subscription.endpoint } } }
+    );
+    await User.updateOne({ _id: user._id }, { $pull: { webPushSubscriptions: { endpoint: subscription.endpoint } } });
+    await User.updateOne(
+      { _id: user._id },
+      { $push: { webPushSubscriptions: { $each: [{ endpoint: subscription.endpoint, keys: subscription.keys }], $slice: -5 } } }
+    );
+    res.json({ success: true, message: 'Reminders enabled' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Could not enable reminders' });
+  }
+};
+
 exports.gymPublicPage = async (req, res) => {
   try {
     const gym = await Gym.findOne({ gymCode: req.params.gymCode });

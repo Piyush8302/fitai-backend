@@ -123,7 +123,8 @@ const sendFeeReminderForMembership = async (m) => {
   const { title, body } = feeReminderText(gymName, u.name, m.dueDate, m.fee);
   await notifyUsers([u], {
     title, body, type: 'reminder',
-    data: { screen: 'MyGymCard', gym: gymName, kind: 'gym_fee', memberName: u.name, avatar: u.avatar || undefined },
+    // gymCode lets the member check-in PWA open their own gym page on tap.
+    data: { screen: 'MyGymCard', gym: gymName, gymCode: m.gym?.gymCode, kind: 'gym_fee', memberName: u.name, avatar: u.avatar || undefined },
     imageUrl: avatarImageUrl(u._id, u.avatar),
   });
   return true;
@@ -135,7 +136,7 @@ const sendFeeReminderForMembership = async (m) => {
 exports.remindMemberNow = async (membershipId) => {
   try {
     const Membership = require('../models/Membership');
-    const m = await Membership.findById(membershipId).populate('gym', 'name').populate('user', 'name avatar expoPushToken');
+    const m = await Membership.findById(membershipId).populate('gym', 'name gymCode').populate('user', 'name avatar expoPushToken');
     if (!m) return false;
     if (m.fee <= 0 || ['trial', 'day_pass'].includes(m.plan) || m.status !== 'active') return false;
     if (!inFeeReminderWindow(m.dueDate)) return false;
@@ -156,7 +157,7 @@ exports.runGymFeeReminders = async () => {
       plan: { $nin: ['trial', 'day_pass'] },
       status: 'active',
       dueDate: { $lte: threeDays, $gte: overdueCap },
-    }).populate('gym', 'name owner').populate('user', 'name avatar expoPushToken');
+    }).populate('gym', 'name gymCode owner').populate('user', 'name avatar expoPushToken');
 
     let sent = 0;
     for (const m of memberships) { if (await sendFeeReminderForMembership(m)) sent++; }
@@ -205,6 +206,73 @@ exports.runGymFeeReminders = async () => {
     return sent;
   } catch (e) {
     console.log('[GymFeeReminder] error:', e.message);
+  }
+};
+
+// ===== "MISSED THE GYM TODAY" NUDGE =====
+// Evening ping (8 PM IST) to active members who haven't checked in today, so
+// there's still time to go before closing. Deliberately warm, never guilt-trippy.
+//
+// Who is SKIPPED, so this stays a nudge and not spam:
+//   • members whose gym is suspended, or whose own status isn't 'active'
+//   • trial / day-pass memberships (not regular members)
+//   • members who already checked in today
+//   • lapsed members — nobody who hasn't come in the last 30 days gets a daily
+//     ping forever; they need a call from the gym, not a notification.
+const MISSED_GYM_LINES = [
+  { title: '🏋️ Aaj gym reh gaya?', body: (n) => `${n}, abhi bhi time hai — 30 minute bhi kaafi hai. Chalo nikal jao! 💪` },
+  { title: '💪 Body khud nahi banegi', body: (n) => `${n}, aaj ka session baaki hai. Ek ghanta apne liye nikaalo! 🔥` },
+  { title: '🔥 Streak todna mat', body: (n) => `${n}, kal tak ka mehnat aaj mat gawao. Gym bula raha hai! 🏋️` },
+  { title: '⏰ Din khatam hone se pehle', body: (n) => `${n}, aaj check-in nahi hua. Thodi si mehnat, badi si difference! 💯` },
+];
+
+exports.runMissedGymReminders = async () => {
+  try {
+    const Membership = require('../models/Membership');
+    const GymAttendance = require('../models/GymAttendance');
+    const Gym = require('../models/Gym');
+
+    const today = new Date(new Date(Date.now() + 5.5 * 3600 * 1000)).toISOString().split('T')[0];
+    const lapsedCutoff = new Date(Date.now() - 30 * DAY_MS);
+
+    // Only members of gyms that are actually running.
+    const liveGymIds = (await Gym.find({ isActive: { $ne: false } }).select('_id')).map((g) => g._id);
+    if (!liveGymIds.length) return 0;
+
+    const memberships = await Membership.find({
+      gym: { $in: liveGymIds },
+      status: 'active',
+      plan: { $nin: ['trial', 'day_pass'] },
+    }).populate('gym', 'name gymCode').populate('user', 'name avatar expoPushToken');
+
+    let sent = 0;
+    for (const m of memberships) {
+      try {
+        const u = m.user;
+        if (!u?._id) continue;
+        // Came in today already → nothing to nudge about.
+        const cameToday = await GymAttendance.exists({ user: u._id, gym: m.gym._id, day: today });
+        if (cameToday) continue;
+        // Lapsed member → skip, a daily ping would just be noise.
+        const recent = await GymAttendance.exists({ user: u._id, gym: m.gym._id, checkInAt: { $gte: lapsedCutoff } });
+        if (!recent) continue;
+
+        const firstName = (u.name || '').split(' ')[0] || 'Champ';
+        const line = MISSED_GYM_LINES[Math.floor(Math.random() * MISSED_GYM_LINES.length)];
+        await notifyUsers([u], {
+          title: line.title,
+          body: line.body(firstName),
+          type: 'reminder',
+          data: { screen: 'MyGymCard', kind: 'missed_gym', gym: m.gym?.name, gymCode: m.gym?.gymCode, avatar: u.avatar || undefined },
+          imageUrl: avatarImageUrl(u._id, u.avatar),
+        });
+        sent++;
+      } catch (e) { /* one member failing must not stop the rest */ }
+    }
+    console.log(`[MissedGymReminder] ${today}: nudged ${sent}/${memberships.length}`);
+    return sent;
+  } catch (e) {
+    console.log('[MissedGymReminder] error:', e.message);
   }
 };
 
