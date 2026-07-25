@@ -119,12 +119,17 @@ exports.getGyms = async (req, res, next) => {
   try {
     const Membership = require('../models/Membership');
     const GymPayment = require('../models/GymPayment');
-    const { page = 1, limit = 20, search = '', status } = req.query;
+    const { page = 1, limit = 20, search = '', status, location } = req.query;
 
     const filter = {};
     if (status === 'active') filter.isActive = { $ne: false };
     else if (status === 'suspended') filter.isActive = false;
     else if (status === 'requested') { filter.isActive = false; filter.reactivationRequested = true; }
+    // Location filter: gyms with no GPS can't do check-in, so admins may want to
+    // find them. lat/lng are set together, so testing lat is enough. Uses $and so
+    // it never clashes with the search $or below (both can be active at once).
+    if (location === 'set') filter.lat = { $ne: null, $exists: true };
+    else if (location === 'none') filter.$and = [{ $or: [{ lat: null }, { lat: { $exists: false } }] }];
     if (search) {
       const rx = new RegExp(search.trim(), 'i');
       // Match gyms by name/city/code, or by their owner's name/phone.
@@ -373,14 +378,40 @@ const attachGyms = async (users) => {
   return users.map((u) => ({ ...u, gyms: byUser.get(String(u._id)) || [] }));
 };
 
-// @desc    Get all users
+// @desc    Get all users (with optional filters)
+//   search   — name / email / phone
+//   isPremium— 'true' | 'false'
+//   status   — 'active' | 'inactive'
+//   type     — 'owner' | 'staff' | 'admin' | 'member' (has a gym membership)
+//              | 'app' (app-only: role user, no membership)
 exports.getUsers = async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, search, isPremium } = req.query;
-    const filter = {};
-    if (search) filter.$or = [{ name: new RegExp(search, 'i') }, { email: new RegExp(search, 'i') }];
-    if (isPremium !== undefined) filter.isPremium = isPremium === 'true';
+    const { page = 1, limit = 20, search, isPremium, status, type } = req.query;
+    const and = [];
 
+    if (search) {
+      const rx = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      and.push({ $or: [{ name: rx }, { email: rx }, { phone: rx }] });
+    }
+    if (isPremium !== undefined) and.push({ isPremium: isPremium === 'true' });
+    if (status === 'active') and.push({ isActive: { $ne: false } });
+    else if (status === 'inactive') and.push({ isActive: false });
+
+    // Type needs the set of users who hold a gym membership.
+    if (type === 'member' || type === 'app') {
+      const Membership = require('../models/Membership');
+      const memberIds = await Membership.distinct('user');
+      if (type === 'member') and.push({ _id: { $in: memberIds } });
+      else and.push({ _id: { $nin: memberIds } }, { role: 'user' }); // app-only
+    } else if (type === 'owner') {
+      and.push({ $or: [{ role: 'gym_owner' }, { ownerStatus: 'approved' }] });
+    } else if (type === 'staff') {
+      and.push({ role: 'gym_staff' });
+    } else if (type === 'admin') {
+      and.push({ role: 'admin' });
+    }
+
+    const filter = and.length ? { $and: and } : {};
     const total = await User.countDocuments(filter);
     const users = await User.find(filter)
       .skip((page - 1) * limit).limit(parseInt(limit))
