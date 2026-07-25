@@ -250,9 +250,28 @@ const migrateUserEmails = async () => {
   } catch (e) { console.log('[migrate] user email migration error:', e.message); }
 };
 
+// One-time (idempotent) migration: staff used to belong to ONE gym (staffGym).
+// They can now be at several (staffGyms array). Fold any legacy staffGym into
+// the array and drop the old field. Safe to run every boot — once staffGym is
+// unset a doc no longer matches.
+const migrateStaffGyms = async () => {
+  try {
+    const coll = require('./models/User').collection;
+    const r = await coll.updateMany(
+      { staffGym: { $exists: true, $ne: null } },
+      [
+        { $set: { staffGyms: { $setUnion: [{ $ifNull: ['$staffGyms', []] }, ['$staffGym']] } } },
+        { $unset: 'staffGym' },
+      ]
+    );
+    if (r.modifiedCount) console.log(`[migrate] moved ${r.modifiedCount} staff to staffGyms[]`);
+  } catch (e) { console.log('[migrate] staffGyms migration error:', e.message); }
+};
+
 const startServer = async () => {
   await connectDB();
   await migrateUserEmails();
+  await migrateStaffGyms();
   await autoSeedArticles();
   startCalorieCheckScheduler();
   app.listen(PORT, () => {

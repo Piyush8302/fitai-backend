@@ -183,7 +183,7 @@ exports.getGymDetail = async (req, res, next) => {
 
     const istDay = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
     const [staff, memberships, revAgg, todayCount] = await Promise.all([
-      User.find({ role: 'gym_staff', staffGym: gym._id }).select('name phone staffRole staffStatus').lean(),
+      User.find({ role: 'gym_staff', staffGyms: gym._id }).select('name phone staffRole staffStatus').lean(),
       Membership.find({ gym: gym._id }).populate('user', 'name phone avatar').sort({ createdAt: -1 }).limit(50).lean(),
       GymPayment.aggregate([{ $match: { gym: gym._id } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
       GymAttendance.countDocuments({ gym: gym._id, day: istDay }),
@@ -268,10 +268,12 @@ exports.deleteGym = async (req, res, next) => {
       GymCashbook.deleteMany({ gym: gym._id }),
       StaffAttendance.deleteMany({ gym: gym._id }).catch(() => ({})),
     ]);
-    // Staff of this gym become ordinary users again (accounts are kept).
+    // Detach this gym from its staff; anyone left working at no gym becomes a
+    // normal user again (staff at OTHER branches keep their role there).
+    await User.updateMany({ role: 'gym_staff', staffGyms: gym._id }, { $pull: { staffGyms: gym._id } });
     await User.updateMany(
-      { role: 'gym_staff', staffGym: gym._id },
-      { $set: { role: 'user' }, $unset: { staffGym: 1, staffRole: 1 } }
+      { role: 'gym_staff', $or: [{ staffGyms: { $size: 0 } }, { staffGyms: { $exists: false } }] },
+      { $set: { role: 'user' }, $unset: { staffRole: 1 } }
     );
     await gym.deleteOne();
 
@@ -412,7 +414,7 @@ const attachGyms = async (users) => {
   if (!users.length) return users;
   const Membership = require('../models/Membership');
   const ids = users.map((u) => u._id);
-  const staffGymIds = users.map((u) => u.staffGym).filter(Boolean);
+  const staffGymIds = users.flatMap((u) => u.staffGyms || []).filter(Boolean);
 
   const [memberships, ownedGyms, staffGyms] = await Promise.all([
     Membership.find({ user: { $in: ids } }).select('user gym status').populate('gym', 'name gymCode').lean(),
@@ -430,8 +432,10 @@ const attachGyms = async (users) => {
   }
   const staffById = new Map(staffGyms.map((g) => [String(g._id), g]));
   for (const u of users) {
-    const g = u.staffGym && staffById.get(String(u.staffGym));
-    if (g) byUser.get(String(u._id))?.push({ _id: g._id, name: g.name, gymCode: g.gymCode, as: 'staff' });
+    for (const gid of u.staffGyms || []) {
+      const g = staffById.get(String(gid));
+      if (g) byUser.get(String(u._id))?.push({ _id: g._id, name: g.name, gymCode: g.gymCode, as: 'staff' });
+    }
   }
   return users.map((u) => ({ ...u, gyms: byUser.get(String(u._id)) || [] }));
 };
@@ -462,7 +466,7 @@ exports.getUsers = async (req, res, next) => {
         Membership.find({ gym: gymId }).distinct('user'),
         Gym.findById(gymId).select('owner'),
       ]);
-      const or = [{ _id: { $in: memberIds } }, { role: 'gym_staff', staffGym: gymId }];
+      const or = [{ _id: { $in: memberIds } }, { role: 'gym_staff', staffGyms: gymId }];
       if (gym?.owner) or.push({ _id: gym.owner });
       and.push({ $or: or });
     }

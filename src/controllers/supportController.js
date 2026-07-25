@@ -11,8 +11,8 @@ exports.submitMessage = async (req, res, next) => {
     const u = req.user;
     let gymName = '';
     if (['gym_owner', 'gym_staff'].includes(u.role)) {
-      const gym = (u.role === 'gym_staff' && u.staffGym)
-        ? await Gym.findById(u.staffGym).select('name')
+      const gym = (u.role === 'gym_staff' && (u.staffGyms || []).length)
+        ? await Gym.findById(u.staffGyms[0]).select('name')
         : await Gym.findOne({ owner: u._id }).select('name');
       gymName = gym?.name || u.requestedGymName || '';
     }
