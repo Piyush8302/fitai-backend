@@ -86,7 +86,7 @@ const notifyGymTeam = async (gymId, { title, body, type = 'info', data = {}, ima
     if (!gym) return;
     const [owner, staff] = await Promise.all([
       User.findById(gym.owner).select('_id expoPushToken'),
-      User.find({ role: 'gym_staff', staffGym: gymId }).select('_id expoPushToken'),
+      User.find({ role: 'gym_staff', staffGyms: gymId }).select('_id expoPushToken'),
     ]);
     let recipients = [owner, ...staff].filter(Boolean);
     if (excludeUserId) recipients = recipients.filter(u => String(u._id) !== String(excludeUserId));
@@ -214,7 +214,7 @@ const nextDue = (fromDate, plan) => {
 
 // Gyms the current user can manage (owner: their gyms; staff: their one gym)
 const myGymIds = async (user) => {
-  if (user.role === 'gym_staff' && user.staffGym) return [String(user.staffGym)];
+  if (user.role === 'gym_staff') return (user.staffGyms || []).map(String);
   const gyms = await Gym.find({ owner: user.id }).select('_id');
   return gyms.map(g => String(g._id));
 };
@@ -439,11 +439,12 @@ exports.addStaff = async (req, res, next) => {
     // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
     const avatarUrl = await uploadAvatar(avatar);
     let user = await User.findOne({ phone: cleanPhone });
+    let already = false;
     if (!user) {
       user = await User.create({
         name: name || 'Staff', phone: cleanPhone,
         // No placeholder email — stays empty until the staff sets one.
-        role: 'gym_staff', staffGym: gymId, staffRole, staffSalary: salary,
+        role: 'gym_staff', staffGyms: [gymId], staffRole, staffSalary: salary,
         staffJoinDate: new Date(), avatar: avatarUrl || '',
       });
     } else {
@@ -452,7 +453,10 @@ exports.addStaff = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'This number belongs to an owner/admin account' });
       }
       user.role = 'gym_staff';
-      user.staffGym = gymId;
+      // Add this gym to the staff's list (a staff can work at several branches).
+      user.staffGyms = user.staffGyms || [];
+      already = user.staffGyms.some((g) => String(g) === String(gymId));
+      if (!already) user.staffGyms.push(gymId);
       if (name) user.name = name;
       if (staffRole !== undefined) user.staffRole = staffRole;
       if (salary !== undefined) user.staffSalary = salary;
@@ -460,6 +464,9 @@ exports.addStaff = async (req, res, next) => {
       if (avatar && !user.avatar) user.avatar = avatarUrl;
       if (!user.staffJoinDate) user.staffJoinDate = new Date();
       await user.save();
+    }
+    if (already) {
+      return res.json({ success: true, alreadyStaff: true, message: 'Already a staff member of this gym', data: { _id: user._id, name: user.name, phone: user.phone } });
     }
     // Welcome the new staff + tell the rest of the team (in-app + push + web).
     try {
@@ -497,8 +504,8 @@ exports.getStaff = async (req, res, next) => {
     const { gymId } = req.params;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
-    const staff = await User.find({ role: 'gym_staff', staffGym: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym canSetLocation').sort({ createdAt: -1 });
+    const staff = await User.find({ role: 'gym_staff', staffGyms: gymId })
+      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus staffGyms canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym canSetLocation').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -519,6 +526,8 @@ exports.getStaff = async (req, res, next) => {
         canEditGym: !!s.canEditGym,
         canSetLocation: !!s.canSetLocation,
         staffStatus: s.staffStatus || 'active',
+        // How many branches this staff works at — lets the UI show a "multi-gym" hint.
+        gymCount: (s.staffGyms || []).length,
         presentToday: !!todayRec, checkInAt: todayRec?.checkInAt || null, monthCount,
       };
     }));
@@ -533,7 +542,10 @@ exports.updateStaff = async (req, res, next) => {
     const { name, staffRole, salary, gymId } = req.body;
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your staff' });
+    // The owner must own at least one of the gyms this staff works at.
+    const staffGyms = (staff.staffGyms || []).map(String);
+    const ownsAny = (await Promise.all(staffGyms.map((g) => ownsGym(req.user, g)))).some(Boolean);
+    if (!ownsAny) return res.status(403).json({ success: false, message: 'Not your staff' });
 
     if (name !== undefined && name.trim()) staff.name = name.trim();
     if (staffRole !== undefined) staff.staffRole = staffRole;
@@ -548,13 +560,13 @@ exports.updateStaff = async (req, res, next) => {
       }
       staff.staffStatus = req.body.staffStatus;
     }
-    // Reassign to another gym the owner owns
-    if (gymId && String(gymId) !== String(staff.staffGym)) {
+    // Add the staff to another of the owner's gyms (multi-branch staff).
+    if (gymId && !staffGyms.includes(String(gymId))) {
       if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
-      staff.staffGym = gymId;
+      staff.staffGyms.push(gymId);
     }
     await staff.save();
-    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGym: staff.staffGym, staffStatus: staff.staffStatus };
+    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGyms: staff.staffGyms, staffStatus: staff.staffStatus };
     PERMS.forEach((k) => { out[k] = !!staff[k]; });
     res.json({ success: true, data: out });
   } catch (e) { next(e); }
@@ -564,11 +576,23 @@ exports.updateStaff = async (req, res, next) => {
 exports.removeStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;
+    const gymId = req.query.gymId || req.body.gymId; // remove from THIS gym only, if given
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    if (!(await ownsGym(req.user, staff.staffGym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    const staffGyms = (staff.staffGyms || []).map(String);
+    const ownsAny = (await Promise.all(staffGyms.map((g) => ownsGym(req.user, g)))).some(Boolean);
+    if (!ownsAny) return res.status(403).json({ success: false, message: 'Not your gym' });
+
+    // Remove from one gym when a gymId is given AND the staff is at more than one;
+    // otherwise fully demote to a normal user (clears all staff fields).
+    if (gymId && staffGyms.length > 1 && staffGyms.includes(String(gymId))) {
+      if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
+      staff.staffGyms = staff.staffGyms.filter((g) => String(g) !== String(gymId));
+      await staff.save();
+      return res.json({ success: true, message: 'Staff removed from this gym', data: { stillStaff: true } });
+    }
     staff.role = 'user';
-    staff.staffGym = undefined;
+    staff.staffGyms = [];
     staff.staffRole = undefined;
     staff.staffSalary = undefined;
     await staff.save();
@@ -582,7 +606,7 @@ exports.markStaffAttendance = async (req, res, next) => {
     const { gymId, staffId } = req.body;
     if (!gymId || !staffId) return res.status(400).json({ success: false, message: 'gymId and staffId required' });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
-    const staff = await User.findOne({ _id: staffId, role: 'gym_staff', staffGym: gymId }).select('name');
+    const staff = await User.findOne({ _id: staffId, role: 'gym_staff', staffGyms: gymId }).select('name');
     if (!staff) return res.status(404).json({ success: false, message: 'Staff not found in this gym' });
 
     const day = istDay();

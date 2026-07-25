@@ -191,7 +191,7 @@ exports.runGymFeeReminders = async () => {
         if (!parts.length) continue;
         const [owner, staff] = await Promise.all([
           User.findById(g.owner).select('_id expoPushToken'),
-          User.find({ role: 'gym_staff', staffGym: gymId }).select('_id expoPushToken'),
+          User.find({ role: 'gym_staff', staffGyms: gymId }).select('_id expoPushToken'),
         ]);
         await notifyUsers([owner, ...staff].filter(Boolean), {
           title: `💰 Unpaid fees — ${g.name}`,

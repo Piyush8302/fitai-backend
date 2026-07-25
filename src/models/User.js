@@ -65,8 +65,10 @@ const userSchema = new mongoose.Schema({
   ownerStatus: { type: String, enum: ['none', 'pending', 'approved', 'rejected'], default: 'none' },
   requestedGymName: { type: String, trim: true },
   ownerRequestedAt: { type: Date },
-  // For gym_staff: which gym they work at (set by the owner)
-  staffGym: { type: mongoose.Schema.Types.ObjectId, ref: 'Gym' },
+  // For gym_staff: the gyms they work at (set by the owner). A staff can be at
+  // more than one of the owner's branches, so this is a list. Legacy single
+  // `staffGym` docs are migrated into this array on startup (see server.js).
+  staffGyms: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Gym' }],
   staffRole: { type: String, trim: true },   // e.g. 'Receptionist', 'Trainer'
   staffSalary: { type: Number },             // monthly salary (optional)
   staffJoinDate: { type: Date },             // when added as staff

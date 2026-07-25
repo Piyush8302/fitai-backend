@@ -92,7 +92,7 @@ async function run() {
   let staff = await User.findOne({ phone: STAFF_PHONE });
   if (!staff) {
     staff = await User.create({
-      name: 'Test Staff', phone: STAFF_PHONE, role: 'gym_staff', staffGym: gym._id,
+      name: 'Test Staff', phone: STAFF_PHONE, role: 'gym_staff', staffGyms: [gym._id],
       staffRole: 'Receptionist', authProvider: 'otp', isProfileComplete: true,
       canAccessCashbook: true, canAccessReports: true, canAddMember: true,
       canMarkPayment: true, canMarkPresent: true, canManageStatus: true,
