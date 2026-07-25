@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, deleteUser, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest, getGyms, getGymDetail, toggleGymActive, deleteGym } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, deleteUser, bulkUsers, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest, getGyms, getGymDetail, toggleGymActive, deleteGym, bulkGyms } = require('../controllers/adminController');
 const { getMessages, resolveMessage, deleteMessage } = require('../controllers/supportController');
 const { protect, admin } = require('../middleware/auth');
 
@@ -27,6 +27,7 @@ router.get('/dashboard', protect, admin, getDashboard);
 router.get('/gyms', protect, admin, getGyms);
 router.get('/gyms/:id', protect, admin, getGymDetail);
 router.put('/gyms/:id/active', protect, admin, toggleGymActive);
+router.post('/gyms/bulk', protect, admin, bulkGyms);         // suspend/activate many at once
 router.delete('/gyms/:id', protect, admin, deleteGym);       // permanent — also wipes members/payments/attendance/cashbook
 
 /**
@@ -101,6 +102,7 @@ router.put('/users/:id/toggle-premium', protect, admin, togglePremium);
  *       200: { description: User deactivated }
  */
 router.put('/users/:id/deactivate', protect, admin, deactivateUser);
+router.post('/users/bulk', protect, admin, bulkUsers);       // deactivate/delete many at once
 router.delete('/users/:id', protect, admin, deleteUser);     // permanent — blocked while the user still owns a gym
 router.put('/users/:id/contact', protect, admin, updateUserContact);
 

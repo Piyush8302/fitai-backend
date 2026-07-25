@@ -54,12 +54,20 @@ exports.phoneExists = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-// @desc    Check if a phone is an approved gym owner/staff (admin-login gating)
+// @desc    Check if a phone OR email is an approved gym owner/staff (login gating).
+//          Owners registered with an email can log in with it, not just the phone.
 exports.ownerStatus = async (req, res, next) => {
   try {
+    const rawEmail = String(req.body.email || req.query.email || '').toLowerCase().trim();
     const cleanPhone = String(req.body.phone || req.query.phone || '').replace(/\D/g, '');
-    if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
-    const user = await User.findOne({ phone: cleanPhone }).select('role ownerStatus');
+    let user = null;
+    if (rawEmail && /^\S+@\S+\.\S+$/.test(rawEmail)) {
+      user = await User.findOne({ email: rawEmail }).select('role ownerStatus');
+    } else if (cleanPhone.length >= 10) {
+      user = await User.findOne({ phone: cleanPhone }).select('role ownerStatus');
+    } else {
+      return res.status(400).json({ success: false, message: 'Valid phone or email required' });
+    }
     let status = 'none';
     if (user) {
       if (['gym_owner', 'gym_staff', 'admin'].includes(user.role) || user.ownerStatus === 'approved') status = 'approved';

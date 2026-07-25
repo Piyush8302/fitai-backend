@@ -119,12 +119,17 @@ exports.getGyms = async (req, res, next) => {
   try {
     const Membership = require('../models/Membership');
     const GymPayment = require('../models/GymPayment');
-    const { page = 1, limit = 20, search = '', status } = req.query;
+    const { page = 1, limit = 20, search = '', status, location } = req.query;
 
     const filter = {};
     if (status === 'active') filter.isActive = { $ne: false };
     else if (status === 'suspended') filter.isActive = false;
     else if (status === 'requested') { filter.isActive = false; filter.reactivationRequested = true; }
+    // Location filter: gyms with no GPS can't do check-in, so admins may want to
+    // find them. lat/lng are set together, so testing lat is enough. Uses $and so
+    // it never clashes with the search $or below (both can be active at once).
+    if (location === 'set') filter.lat = { $ne: null, $exists: true };
+    else if (location === 'none') filter.$and = [{ $or: [{ lat: null }, { lat: { $exists: false } }] }];
     if (search) {
       const rx = new RegExp(search.trim(), 'i');
       // Match gyms by name/city/code, or by their owner's name/phone.
@@ -295,49 +300,107 @@ exports.deleteGym = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// Why a user CAN'T be deleted (returns a reason string), or null if they can.
+// Shared by the single-delete endpoint and the bulk one so the rules never drift.
+const undeletableReason = async (user, adminId) => {
+  if (!user) return 'not found';
+  if (String(user._id) === String(adminId)) return 'your own account';
+  if (user.role === 'admin') return 'admin account';
+  const owned = await Gym.countDocuments({ owner: user._id });
+  if (owned > 0) return `owns ${owned} gym${owned > 1 ? 's' : ''}`;
+  return null;
+};
+
+// Remove a user's account and all their PERSONAL data. Gym payments are kept on
+// purpose — they belong to the gym's books, not the member.
+const deleteUserAndData = async (user) => {
+  const Membership = require('../models/Membership');
+  const GymAttendance = require('../models/GymAttendance');
+  const Notification = require('../models/Notification');
+  const ChatMessage = require('../models/ChatMessage');
+  const Favorite = require('../models/Favorite');
+  const Achievement = require('../models/Achievement');
+  await Promise.all([
+    Membership.deleteMany({ user: user._id }),
+    GymAttendance.deleteMany({ user: user._id }),
+    Tracking.deleteMany({ user: user._id }),
+    Subscription.deleteMany({ user: user._id }),
+    Notification.deleteMany({ user: user._id }),
+    ChatMessage.deleteMany({ user: user._id }),
+    Favorite.deleteMany({ user: user._id }),
+    Achievement.deleteMany({ user: user._id }),
+  ]);
+  await user.deleteOne();
+};
+
 // @desc  Permanently delete a user and their personal data.
-//        Gym PAYMENTS are deliberately kept — they are the gym's financial
-//        record, not the member's, and removing them would rewrite its books.
 exports.deleteUser = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    if (String(user._id) === String(req.user.id)) {
-      return res.status(400).json({ success: false, message: 'You cannot delete your own admin account' });
-    }
-    if (user.role === 'admin') {
-      return res.status(400).json({ success: false, message: 'Admin accounts cannot be deleted' });
-    }
-    // An owner's gyms must go first, else the gym, its members and its ledger
-    // would be left with no owner.
-    const owned = await Gym.countDocuments({ owner: user._id });
-    if (owned > 0) {
-      return res.status(409).json({
-        success: false,
-        message: `This user owns ${owned} gym${owned > 1 ? 's' : ''}. Delete the gym${owned > 1 ? 's' : ''} first, then the account.`,
-      });
-    }
+    const reason = await undeletableReason(user, req.user.id);
+    if (reason === 'not found') return res.status(404).json({ success: false, message: 'User not found' });
+    if (reason === 'your own account') return res.status(400).json({ success: false, message: 'You cannot delete your own admin account' });
+    if (reason === 'admin account') return res.status(400).json({ success: false, message: 'Admin accounts cannot be deleted' });
+    if (reason) return res.status(409).json({ success: false, message: `This user ${reason}. Delete the gym(s) first, then the account.` });
 
     const name = user.name || 'User';
-    const Membership = require('../models/Membership');
-    const GymAttendance = require('../models/GymAttendance');
-    const Notification = require('../models/Notification');
-    const ChatMessage = require('../models/ChatMessage');
-    const Favorite = require('../models/Favorite');
-    const Achievement = require('../models/Achievement');
-    await Promise.all([
-      Membership.deleteMany({ user: user._id }),
-      GymAttendance.deleteMany({ user: user._id }),
-      Tracking.deleteMany({ user: user._id }),
-      Subscription.deleteMany({ user: user._id }),
-      Notification.deleteMany({ user: user._id }),
-      ChatMessage.deleteMany({ user: user._id }),
-      Favorite.deleteMany({ user: user._id }),
-      Achievement.deleteMany({ user: user._id }),
-    ]);
-    await user.deleteOne();
-
+    await deleteUserAndData(user);
     res.json({ success: true, message: `${name} deleted permanently` });
+  } catch (e) { next(e); }
+};
+
+// @desc  Bulk action on selected users: 'deactivate' or 'delete'.
+//        Delete respects the same guards as single delete — protected users are
+//        skipped (with a reason) rather than failing the whole request.
+exports.bulkUsers = async (req, res, next) => {
+  try {
+    const { action } = req.body;
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ success: false, message: 'No users selected' });
+
+    if (action === 'deactivate') {
+      // Never deactivate an admin (or yourself, who is an admin anyway).
+      const r = await User.updateMany({ _id: { $in: ids }, role: { $ne: 'admin' } }, { isActive: false });
+      return res.json({ success: true, message: `${r.modifiedCount} user(s) deactivated`, data: { modified: r.modifiedCount } });
+    }
+
+    if (action === 'delete') {
+      let deleted = 0;
+      const skipped = [];
+      for (const id of ids) {
+        const user = await User.findById(id);
+        const reason = await undeletableReason(user, req.user.id);
+        if (reason) { skipped.push({ id, reason }); continue; }
+        await deleteUserAndData(user);
+        deleted++;
+      }
+      const msg = `${deleted} deleted` + (skipped.length ? `, ${skipped.length} skipped` : '');
+      return res.json({ success: true, message: msg, data: { deleted, skipped } });
+    }
+
+    return res.status(400).json({ success: false, message: 'Unknown action' });
+  } catch (e) { next(e); }
+};
+
+// @desc  Bulk action on selected gyms: 'suspend' or 'activate'.
+exports.bulkGyms = async (req, res, next) => {
+  try {
+    const { action } = req.body;
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ success: false, message: 'No gyms selected' });
+
+    if (action === 'suspend') {
+      const r = await Gym.updateMany({ _id: { $in: ids } }, { isActive: false });
+      return res.json({ success: true, message: `${r.modifiedCount} gym(s) suspended`, data: { modified: r.modifiedCount } });
+    }
+    if (action === 'activate') {
+      const r = await Gym.updateMany(
+        { _id: { $in: ids } },
+        { isActive: true, reactivationRequested: false, reactivationRequestedAt: undefined, reactivationNote: undefined }
+      );
+      return res.json({ success: true, message: `${r.modifiedCount} gym(s) activated`, data: { modified: r.modifiedCount } });
+    }
+    return res.status(400).json({ success: false, message: 'Unknown action' });
   } catch (e) { next(e); }
 };
 
@@ -373,14 +436,52 @@ const attachGyms = async (users) => {
   return users.map((u) => ({ ...u, gyms: byUser.get(String(u._id)) || [] }));
 };
 
-// @desc    Get all users
+// @desc    Get all users (with optional filters)
+//   search   — name / email / phone
+//   isPremium— 'true' | 'false'
+//   status   — 'active' | 'inactive'
+//   type     — 'owner' | 'staff' | 'admin' | 'member' (has a gym membership)
+//              | 'app' (app-only: role user, no membership)
 exports.getUsers = async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, search, isPremium } = req.query;
-    const filter = {};
-    if (search) filter.$or = [{ name: new RegExp(search, 'i') }, { email: new RegExp(search, 'i') }];
-    if (isPremium !== undefined) filter.isPremium = isPremium === 'true';
+    const { page = 1, limit = 20, search, isPremium, status, type, gymId } = req.query;
+    const and = [];
 
+    if (search) {
+      const rx = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      and.push({ $or: [{ name: rx }, { email: rx }, { phone: rx }] });
+    }
+    if (isPremium !== undefined) and.push({ isPremium: isPremium === 'true' });
+    if (status === 'active') and.push({ isActive: { $ne: false } });
+    else if (status === 'inactive') and.push({ isActive: false });
+
+    // Filter to everyone attached to one gym — its members, its owner and its staff.
+    if (gymId) {
+      const Membership = require('../models/Membership');
+      const [memberIds, gym] = await Promise.all([
+        Membership.find({ gym: gymId }).distinct('user'),
+        Gym.findById(gymId).select('owner'),
+      ]);
+      const or = [{ _id: { $in: memberIds } }, { role: 'gym_staff', staffGym: gymId }];
+      if (gym?.owner) or.push({ _id: gym.owner });
+      and.push({ $or: or });
+    }
+
+    // Type needs the set of users who hold a gym membership.
+    if (type === 'member' || type === 'app') {
+      const Membership = require('../models/Membership');
+      const memberIds = await Membership.distinct('user');
+      if (type === 'member') and.push({ _id: { $in: memberIds } });
+      else and.push({ _id: { $nin: memberIds } }, { role: 'user' }); // app-only
+    } else if (type === 'owner') {
+      and.push({ $or: [{ role: 'gym_owner' }, { ownerStatus: 'approved' }] });
+    } else if (type === 'staff') {
+      and.push({ role: 'gym_staff' });
+    } else if (type === 'admin') {
+      and.push({ role: 'admin' });
+    }
+
+    const filter = and.length ? { $and: and } : {};
     const total = await User.countDocuments(filter);
     const users = await User.find(filter)
       .skip((page - 1) * limit).limit(parseInt(limit))
