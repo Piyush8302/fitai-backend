@@ -436,14 +436,23 @@ exports.addStaff = async (req, res, next) => {
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
 
+    // Email is required for staff — they can log in with it, and it's how we
+    // reach them if the number changes.
+    const cleanEmail = String(req.body.email || '').toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: 'A valid email is required for staff' });
+    }
+
     // Cloudinary: base64 photo → URL (falls back to base64 if not configured).
     const avatarUrl = await uploadAvatar(avatar);
     let user = await User.findOne({ phone: cleanPhone });
+    // An email belongs to one account only.
+    const emailTaken = await User.findOne({ email: cleanEmail, ...(user ? { _id: { $ne: user._id } } : {}) }).select('_id');
+    if (emailTaken) return res.status(400).json({ success: false, message: 'This email is already used by another account' });
     let already = false;
     if (!user) {
       user = await User.create({
-        name: name || 'Staff', phone: cleanPhone,
-        // No placeholder email — stays empty until the staff sets one.
+        name: name || 'Staff', phone: cleanPhone, email: cleanEmail,
         role: 'gym_staff', staffGyms: [gymId], staffRole, staffSalary: salary,
         staffJoinDate: new Date(), avatar: avatarUrl || '',
       });
@@ -457,6 +466,7 @@ exports.addStaff = async (req, res, next) => {
       user.staffGyms = user.staffGyms || [];
       already = user.staffGyms.some((g) => String(g) === String(gymId));
       if (!already) user.staffGyms.push(gymId);
+      user.email = cleanEmail;
       if (name) user.name = name;
       if (staffRole !== undefined) user.staffRole = staffRole;
       if (salary !== undefined) user.staffSalary = salary;
@@ -505,7 +515,7 @@ exports.getStaff = async (req, res, next) => {
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
 
     const staff = await User.find({ role: 'gym_staff', staffGyms: gymId })
-      .select('name phone avatar staffRole staffSalary staffJoinDate staffStatus staffGyms canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym canSetLocation').sort({ createdAt: -1 });
+      .select('name phone email avatar staffRole staffSalary staffJoinDate staffStatus staffGyms canAccessCashbook canAccessReports canAddMember canMarkPayment canMarkPresent canManageStatus canEditGym canSetLocation').sort({ createdAt: -1 });
     const day = istDay();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
@@ -515,7 +525,7 @@ exports.getStaff = async (req, res, next) => {
         StaffAttendance.countDocuments({ staff: s._id, gym: gymId, checkInAt: { $gte: monthStart } }),
       ]);
       return {
-        _id: s._id, name: s.name, phone: s.phone, avatar: s.avatar,
+        _id: s._id, name: s.name, phone: s.phone, email: s.email || '', avatar: s.avatar,
         staffRole: s.staffRole, staffSalary: s.staffSalary, staffJoinDate: s.staffJoinDate,
         canAccessCashbook: !!s.canAccessCashbook,
         canAccessReports: !!s.canAccessReports,
@@ -550,6 +560,16 @@ exports.updateStaff = async (req, res, next) => {
     if (name !== undefined && name.trim()) staff.name = name.trim();
     if (staffRole !== undefined) staff.staffRole = staffRole;
     if (salary !== undefined) staff.staffSalary = salary === '' ? undefined : Number(salary);
+    // Email — staff log in with it, so it must stay valid and unique.
+    if (req.body.email !== undefined) {
+      const e = String(req.body.email).toLowerCase().trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+        return res.status(400).json({ success: false, message: 'Enter a valid email address' });
+      }
+      const taken = await User.findOne({ email: e, _id: { $ne: staff._id } }).select('_id');
+      if (taken) return res.status(400).json({ success: false, message: 'This email is already used by another account' });
+      staff.email = e;
+    }
     // Owner-grantable permissions
     const PERMS = ['canAccessCashbook', 'canAccessReports', 'canAddMember', 'canMarkPayment', 'canMarkPresent', 'canManageStatus', 'canEditGym', 'canSetLocation'];
     PERMS.forEach((k) => { if (req.body[k] !== undefined) staff[k] = !!req.body[k]; });
@@ -566,7 +586,7 @@ exports.updateStaff = async (req, res, next) => {
       staff.staffGyms.push(gymId);
     }
     await staff.save();
-    const out = { _id: staff._id, name: staff.name, staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGyms: staff.staffGyms, staffStatus: staff.staffStatus };
+    const out = { _id: staff._id, name: staff.name, email: staff.email || '', staffRole: staff.staffRole, staffSalary: staff.staffSalary, staffGyms: staff.staffGyms, staffStatus: staff.staffStatus };
     PERMS.forEach((k) => { out[k] = !!staff[k]; });
     res.json({ success: true, data: out });
   } catch (e) { next(e); }
