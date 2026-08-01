@@ -1,9 +1,58 @@
+const Exercise = require('../models/Exercise');
+
+// Exercises live in MongoDB, imported from free-exercise-db (see
+// utils/importExercises.js). The hand-written list at the bottom of this file
+// stays as a fallback so the endpoints keep working before that import has run
+// — or if the collection is ever emptied.
+const dbHasExercises = async () => {
+  try { return (await Exercise.estimatedDocumentCount()) > 0; } catch (e) { return false; }
+};
+
+// Mongo doc → the shape the app already expects (id, calories_per_set, …)
+const toApi = (d) => ({
+  id: d.slug || String(d._id),
+  name: d.name,
+  muscle: d.muscle,
+  secondaryMuscles: d.secondaryMuscles || [],
+  equipment: d.equipment,
+  difficulty: d.difficulty,
+  sets: d.sets,
+  reps: d.reps,
+  instructions: d.instructions,
+  tips: d.tips,
+  calories_per_set: d.caloriesPerSet,
+  images: d.images || [],
+});
+
 // @desc    Get all exercises (with filters)
 exports.getExercises = async (req, res, next) => {
   try {
     const { muscle, equipment, difficulty, search, page = 1, limit = 20 } = req.query;
-    let results = EXERCISE_DATABASE;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
+    if (await dbHasExercises()) {
+      const filter = {};
+      if (muscle) filter.$or = [{ muscle }, { secondaryMuscles: muscle }];
+      if (equipment) filter.equipment = equipment;
+      if (difficulty) filter.difficulty = difficulty;
+      if (search) {
+        const rx = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        // Combine with the muscle $or above without one overwriting the other
+        filter.$and = [{ $or: [{ name: rx }, { muscle: rx }] }];
+      }
+      const [total, docs] = await Promise.all([
+        Exercise.countDocuments(filter),
+        // Hand-written entries first — they carry coaching tips
+        Exercise.find(filter).sort({ curated: -1, name: 1 }).skip(skip).limit(parseInt(limit)).lean(),
+      ]);
+      return res.json({
+        success: true, count: docs.length, total,
+        pages: Math.ceil(total / parseInt(limit)), data: docs.map(toApi),
+      });
+    }
+
+    // ── fallback: built-in list ──
+    let results = EXERCISE_DATABASE;
     if (muscle) results = results.filter(e => e.muscle === muscle || e.secondaryMuscles?.includes(muscle));
     if (equipment) results = results.filter(e => e.equipment === equipment);
     if (difficulty) results = results.filter(e => e.difficulty === difficulty);
@@ -11,21 +60,25 @@ exports.getExercises = async (req, res, next) => {
       const q = search.toLowerCase();
       results = results.filter(e => e.name.toLowerCase().includes(q) || e.muscle.toLowerCase().includes(q));
     }
-
     const total = results.length;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
     results = results.slice(skip, skip + parseInt(limit));
-
     res.json({ success: true, count: results.length, total, pages: Math.ceil(total / parseInt(limit)), data: results });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get exercise by ID
+// @desc    Get exercise by ID (slug, Mongo id, or a legacy numeric id)
 exports.getExerciseById = async (req, res, next) => {
   try {
-    const exercise = EXERCISE_DATABASE.find(e => e.id === parseInt(req.params.id));
+    const { id } = req.params;
+    if (await dbHasExercises()) {
+      const or = [{ slug: id }];
+      if (/^[0-9a-fA-F]{24}$/.test(id)) or.push({ _id: id });
+      const doc = await Exercise.findOne({ $or: or }).lean();
+      if (doc) return res.json({ success: true, data: toApi(doc) });
+    }
+    const exercise = EXERCISE_DATABASE.find(e => String(e.id) === String(id));
     if (!exercise) return res.status(404).json({ success: false, message: 'Exercise not found' });
     res.json({ success: true, data: exercise });
   } catch (error) {
@@ -36,7 +89,13 @@ exports.getExerciseById = async (req, res, next) => {
 // @desc    Get exercises by muscle group
 exports.getByMuscle = async (req, res, next) => {
   try {
-    const exercises = EXERCISE_DATABASE.filter(e => e.muscle === req.params.muscle || e.secondaryMuscles?.includes(req.params.muscle));
+    const { muscle } = req.params;
+    if (await dbHasExercises()) {
+      const docs = await Exercise.find({ $or: [{ muscle }, { secondaryMuscles: muscle }] })
+        .sort({ curated: -1, name: 1 }).limit(100).lean();
+      return res.json({ success: true, count: docs.length, data: docs.map(toApi) });
+    }
+    const exercises = EXERCISE_DATABASE.filter(e => e.muscle === muscle || e.secondaryMuscles?.includes(muscle));
     res.json({ success: true, count: exercises.length, data: exercises });
   } catch (error) {
     next(error);
@@ -46,6 +105,13 @@ exports.getByMuscle = async (req, res, next) => {
 // @desc    Get available muscle groups
 exports.getMuscleGroups = async (req, res, next) => {
   try {
+    if (await dbHasExercises()) {
+      const rows = await Exercise.aggregate([
+        { $group: { _id: '$muscle', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]);
+      return res.json({ success: true, data: rows.map(r => ({ name: r._id, count: r.count })) });
+    }
     const muscles = [...new Set(EXERCISE_DATABASE.map(e => e.muscle))];
     const data = muscles.map(m => ({ name: m, count: EXERCISE_DATABASE.filter(e => e.muscle === m).length }));
     res.json({ success: true, data });
