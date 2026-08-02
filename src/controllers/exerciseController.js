@@ -8,8 +8,17 @@ const dbHasExercises = async () => {
   try { return (await Exercise.estimatedDocumentCount()) > 0; } catch (e) { return false; }
 };
 
+// Images are served through us rather than linking straight to the upstream
+// host. The app already talks to this origin reliably, whereas fetching
+// raw.githubusercontent.com directly fails silently on some devices/networks
+// (certificate warnings, ISP blocks) and leaves blank image boxes.
+const imageBase = (req) => {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  return `${proto}://${req.get('host')}/api/exercises`;
+};
+
 // Mongo doc → the shape the app already expects (id, calories_per_set, …)
-const toApi = (d) => ({
+const toApi = (d, req) => ({
   id: d.slug || String(d._id),
   name: d.name,
   muscle: d.muscle,
@@ -21,8 +30,30 @@ const toApi = (d) => ({
   instructions: d.instructions,
   tips: d.tips,
   calories_per_set: d.caloriesPerSet,
-  images: d.images || [],
+  images: (d.images || []).map((_, i) => `${imageBase(req)}/${d.slug}/image/${i}`),
 });
+
+// @desc  Stream one of an exercise's images through this server.
+//        The index addresses a URL we already stored, so no caller-supplied
+//        address is ever fetched.
+exports.getExerciseImage = async (req, res) => {
+  try {
+    const { slug, idx } = req.params;
+    const doc = await Exercise.findOne({ slug }).select('images').lean();
+    const url = doc?.images?.[parseInt(idx, 10)];
+    if (!url) return res.status(404).end();
+
+    const upstream = await fetch(url);
+    if (!upstream.ok) return res.status(502).end();
+
+    res.set('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
+    // These never change, so let the device keep them for a month.
+    res.set('Cache-Control', 'public, max-age=2592000, immutable');
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (e) {
+    res.status(502).end();
+  }
+};
 
 // @desc    Get all exercises (with filters)
 exports.getExercises = async (req, res, next) => {
@@ -47,7 +78,7 @@ exports.getExercises = async (req, res, next) => {
       ]);
       return res.json({
         success: true, count: docs.length, total,
-        pages: Math.ceil(total / parseInt(limit)), data: docs.map(toApi),
+        pages: Math.ceil(total / parseInt(limit)), data: docs.map((d) => toApi(d, req)),
       });
     }
 
@@ -76,7 +107,7 @@ exports.getExerciseById = async (req, res, next) => {
       const or = [{ slug: id }];
       if (/^[0-9a-fA-F]{24}$/.test(id)) or.push({ _id: id });
       const doc = await Exercise.findOne({ $or: or }).lean();
-      if (doc) return res.json({ success: true, data: toApi(doc) });
+      if (doc) return res.json({ success: true, data: toApi(doc, req) });
     }
     const exercise = EXERCISE_DATABASE.find(e => String(e.id) === String(id));
     if (!exercise) return res.status(404).json({ success: false, message: 'Exercise not found' });
@@ -93,7 +124,7 @@ exports.getByMuscle = async (req, res, next) => {
     if (await dbHasExercises()) {
       const docs = await Exercise.find({ $or: [{ muscle }, { secondaryMuscles: muscle }] })
         .sort({ curated: -1, name: 1 }).limit(100).lean();
-      return res.json({ success: true, count: docs.length, data: docs.map(toApi) });
+      return res.json({ success: true, count: docs.length, data: docs.map((d) => toApi(d, req)) });
     }
     const exercises = EXERCISE_DATABASE.filter(e => e.muscle === muscle || e.secondaryMuscles?.includes(muscle));
     res.json({ success: true, count: exercises.length, data: exercises });

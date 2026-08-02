@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getExercises, getExerciseById, getByMuscle, getMuscleGroups } = require('../controllers/exerciseController');
+const { getExercises, getExerciseById, getByMuscle, getMuscleGroups, getExerciseImage } = require('../controllers/exerciseController');
 
 /**
  * @swagger
@@ -65,6 +65,27 @@ router.get('/muscles', getMuscleGroups);
  *       200: { description: Exercises for muscle }
  */
 router.get('/muscle/:muscle', getByMuscle);
+
+/**
+ * @swagger
+ * /exercises/{slug}/image/{idx}:
+ *   get:
+ *     tags: [Exercise Library]
+ *     summary: Exercise photo, streamed through this server
+ *     description: Served from here rather than linking to the upstream host, which some devices and networks fail to load.
+ *     parameters:
+ *       - in: path
+ *         name: slug
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: idx
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Image bytes }
+ */
+router.get('/:slug/image/:idx', getExerciseImage);
 
 /**
  * @swagger
