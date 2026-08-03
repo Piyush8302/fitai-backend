@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { searchFood, getFoodById, getFoodCategories, calculateMeal } = require('../controllers/foodController');
+const { searchFood, getFoodById, getFoodCategories, calculateMeal, analyzeFoodPhoto } = require('../controllers/foodController');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -74,6 +74,28 @@ router.get('/categories', getFoodCategories);
  *       200: { description: Calculated meal nutrition }
  */
 router.post('/calculate', protect, calculateMeal);
+
+/**
+ * @swagger
+ * /food/analyze-photo:
+ *   post:
+ *     tags: [Food Database]
+ *     summary: Estimate the foods and calories in a meal photo
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               image: { type: string, description: "JPEG/PNG as a data: URI or bare base64" }
+ *     responses:
+ *       200: { description: Detected food items with per-serving nutrition }
+ *       422: { description: Nothing recognisable in the photo }
+ *       503: { description: GEMINI_API_KEY not configured }
+ */
+router.post('/analyze-photo', protect, analyzeFoodPhoto);
 
 /**
  * @swagger
