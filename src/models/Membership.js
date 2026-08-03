@@ -14,6 +14,25 @@ const membershipSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'expired', 'frozen', 'inactive', 'blocked', 'left'], default: 'active' },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // owner/staff who added
   note: { type: String },
+
+  // ---- Gym-side profile (what the gym collects at registration) ----
+  // Kept HERE and not on User on purpose: the gym's copy of a member's photo and
+  // details belongs to the gym. The owner editing it must never change what the
+  // member sees as their own profile photo in the FitAI app (User.avatar).
+  photo: { type: String },            // gym's photo of this member (Cloudinary URL / base64)
+  email: { type: String },            // email given to THIS gym
+  gender: { type: String, enum: ['male', 'female', 'other', ''], default: '' },
+  dob: { type: Date },
+  address: { type: String },
+  emergencyName: { type: String },
+  emergencyPhone: { type: String },
+  bloodGroup: { type: String },
+  goal: { type: String },             // e.g. weight loss / muscle gain
+  height: { type: Number },           // cm
+  weight: { type: Number },           // kg
+  // How this membership was created — self scan in the app, the public web
+  // check-in page, or added by the owner/staff at the counter.
+  registeredVia: { type: String, enum: ['app_scan', 'web', 'counter'], default: 'counter' },
 }, { timestamps: true });
 
 // One membership per user per gym
