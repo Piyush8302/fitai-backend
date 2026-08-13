@@ -276,6 +276,150 @@ exports.searchFood = async (req, res, next) => {
   }
 };
 
+// ─── Photo → calories ────────────────────────────────────────────────────────
+// Gemini 2.0 Flash is already wired up for the AI chat (GEMINI_API_KEY) and is
+// multimodal with a free tier, so the meal photo goes to the same provider
+// rather than adding a paid food-vision service. It returns the dishes it can
+// see; each is then matched against the local FOOD_DATABASE so the numbers come
+// from our own Indian food data wherever we have that dish, and fall back to
+// the model's estimate only for things we don't carry.
+
+// Exact-only lookup for photo results. smartSearch is deliberately fuzzy for a
+// search box (typing "dal" should surface dishes), but here a near-miss silently
+// logs the wrong food — "Dal" matched "Dalia (Broken Wheat)". So a detected name
+// must equal a food's name, its name minus any "(...)" suffix, its Hindi name or
+// one of its aliases; anything else keeps the model's own numbers.
+const normFood = (s) => String(s || '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+
+const exactFoodMatch = (name) => {
+  const target = normFood(HINDI_ALIASES[String(name).toLowerCase().trim()] || name);
+  if (!target) return null;
+  return FOOD_DATABASE.find((f) =>
+    normFood(f.name) === target ||
+    normFood(f.hindiName) === target ||
+    (f.aliases || []).some((a) => normFood(a) === target)
+  ) || null;
+};
+
+// Pull the first JSON array/object out of a model reply (it likes ```json fences).
+const extractJson = (text) => {
+  if (!text) return null;
+  const cleaned = String(text).replace(/```json/gi, '```').split('```').join('\n');
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+  try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { return null; }
+};
+
+const PHOTO_PROMPT = `You are a nutrition estimator for an Indian fitness app.
+Look at the meal photo and list every distinct food item you can identify.
+For each item estimate the portion actually visible in the photo.
+
+Reply with ONLY a JSON array, no prose, in exactly this shape:
+[{"name":"Roti","quantity":2,"serving":"1 piece (40g)","calories":110,"protein":3,"carbs":22,"fat":1}]
+
+Rules:
+- "calories"/"protein"/"carbs"/"fat" are PER ONE serving, not for the whole quantity.
+- "quantity" is how many of that serving are visible (may be decimal, e.g. 1.5).
+- Use common Indian names where they apply (Roti, Dal, Paneer Butter Masala, Idli...).
+- Numbers only for the nutrition fields — no units, no ranges, no text.
+- If the photo has no food in it, reply with exactly [].`;
+
+exports.analyzeFoodPhoto = async (req, res, next) => {
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      return res.status(503).json({ success: false, message: 'Photo scanning is not configured on the server yet.' });
+    }
+
+    const raw = String(req.body?.image || '');
+    const m = /^data:(image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i.exec(raw);
+    const base64 = m ? m[2] : (raw && !raw.startsWith('data:') ? raw : null);
+    const mimeType = m ? m[1].toLowerCase().replace('image/jpg', 'image/jpeg') : 'image/jpeg';
+    if (!base64) return res.status(400).json({ success: false, message: 'A JPEG/PNG photo is required' });
+    // ~10MB request cap upstream; keep a sane ceiling so a huge upload can't stall the model call.
+    if (base64.length > 6_000_000) {
+      return res.status(413).json({ success: false, message: 'Photo is too large — take it again at a smaller size.' });
+    }
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: PHOTO_PROMPT },
+              { inline_data: { mime_type: mimeType, data: base64 } },
+            ],
+          }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 800, responseMimeType: 'application/json' },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Gemini photo error:', JSON.stringify(data?.error || data));
+      return res.status(502).json({ success: false, message: 'Could not read the photo right now. Please try again.' });
+    }
+
+    const parsed = extractJson(data?.candidates?.[0]?.content?.parts?.[0]?.text);
+    if (!Array.isArray(parsed)) {
+      return res.status(422).json({ success: false, message: "Couldn't identify the food. Try a clearer, closer photo." });
+    }
+
+    const num = (v, max) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : 0;
+    };
+
+    const items = parsed.slice(0, 12).map((raw) => {
+      const name = String(raw?.name || '').trim().slice(0, 60);
+      if (!name) return null;
+      // Prefer our own data for dishes we already carry — the local database is
+      // tuned for Indian portions, the model's guess is the fallback.
+      const local = exactFoodMatch(name);
+      const qty = Math.min(20, Math.max(0.5, num(raw?.quantity, 20) || 1));
+      const base = local || {
+        name,
+        calories: num(raw?.calories, 2000),
+        protein: num(raw?.protein, 300),
+        carbs: num(raw?.carbs, 500),
+        fat: num(raw?.fat, 300),
+        serving: String(raw?.serving || '1 serving').slice(0, 40),
+      };
+      return {
+        id: local?.id,
+        name: base.name,
+        detectedAs: name,
+        matched: !!local,          // false = numbers are the model's estimate
+        quantity: qty,
+        serving: base.serving || '1 serving',
+        calories: Math.round(base.calories || 0),
+        protein: Number((base.protein || 0).toFixed(1)),
+        carbs: Number((base.carbs || 0).toFixed(1)),
+        fat: Number((base.fat || 0).toFixed(1)),
+      };
+    }).filter(Boolean).filter((i) => i.calories > 0);
+
+    if (!items.length) {
+      return res.json({ success: true, count: 0, data: [], message: "No food found in that photo — try a clearer, closer shot." });
+    }
+
+    res.json({
+      success: true,
+      count: items.length,
+      data: items,
+      message: 'Estimated from the photo — check the amounts before logging.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Get food by ID
 exports.getFoodById = async (req, res, next) => {
   try {

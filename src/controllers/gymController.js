@@ -247,6 +247,57 @@ const denyIfSuspended = (res, gym, forMember = false) => {
   return true;
 };
 
+// ── Two photos, one member ──────────────────────────────────────────────────
+// `User.avatar` is the member's OWN profile photo in the FitAI app; they control
+// it. `Membership.photo` is the gym's photo of that member, taken at the counter.
+// Gym screens must show the gym's photo when it exists, and editing it must never
+// touch the member's app avatar. This builds that gym-side view of the user while
+// keeping the response shape old app/web builds already expect.
+const gymSideUser = (m) => {
+  const raw = m?.user;
+  if (!raw || !raw._id) return raw;                       // not populated — leave as-is
+  const u = typeof raw.toObject === 'function' ? raw.toObject() : { ...raw };
+  return {
+    ...u,
+    avatar: m.photo || u.avatar || '',   // what gym screens show
+    gymPhoto: m.photo || '',             // the gym's own copy (empty = none set)
+    appAvatar: u.avatar || '',           // the member's app photo, for reference
+    email: m.email || u.email || '',     // email given to THIS gym wins
+  };
+};
+
+// The gym-registration details the member filled in (or the counter collected).
+const gymProfileFields = (m) => ({
+  email: m.email || '',
+  gender: m.gender || '',
+  dob: m.dob || null,
+  address: m.address || '',
+  emergencyName: m.emergencyName || '',
+  emergencyPhone: m.emergencyPhone || '',
+  bloodGroup: m.bloodGroup || '',
+  goal: m.goal || '',
+  height: m.height || null,
+  weight: m.weight || null,
+  registeredVia: m.registeredVia || 'counter',
+});
+
+// Whitelist + clean what a registration form may write onto a membership.
+const pickGymProfile = (p = {}) => {
+  const out = {};
+  const str = (v, max = 200) => String(v == null ? '' : v).trim().slice(0, max);
+  if (p.email != null) out.email = str(p.email, 120).toLowerCase();
+  if (p.gender != null) out.gender = ['male', 'female', 'other'].includes(String(p.gender)) ? String(p.gender) : '';
+  if (p.dob) { const d = new Date(p.dob); if (!isNaN(d)) out.dob = d; }
+  if (p.address != null) out.address = str(p.address, 300);
+  if (p.emergencyName != null) out.emergencyName = str(p.emergencyName, 100);
+  if (p.emergencyPhone != null) out.emergencyPhone = str(p.emergencyPhone, 20);
+  if (p.bloodGroup != null) out.bloodGroup = str(p.bloodGroup, 5).toUpperCase();
+  if (p.goal != null) out.goal = str(p.goal, 100);
+  if (p.height != null && p.height !== '') { const n = Number(p.height); if (n > 0 && n < 300) out.height = n; }
+  if (p.weight != null && p.weight !== '') { const n = Number(p.weight); if (n > 0 && n < 500) out.weight = n; }
+  return out;
+};
+
 // @desc  Serve a user's avatar as a real image (so push thumbnails can use a URL).
 //        Public — Expo fetches it from the device with no auth header.
 exports.getAvatarImage = async (req, res) => {
@@ -395,11 +446,11 @@ exports.addMember = async (req, res, next) => {
         phone,
         // No email for phone-only members — it stays empty until the member sets it.
         role: 'user',
+        // Seed the app avatar only for a brand-new account that has no photo of
+        // its own yet. For an existing member the gym photo stays on the
+        // membership so their app profile picture is left alone.
         avatar: avatarUrl || '',
       });
-    } else if (avatar && !user.avatar) {
-      // try { user.avatar = avatar; await user.save(); } catch (e) {} // OLD: base64
-      try { user.avatar = avatarUrl; await user.save(); } catch (e) {}
     }
 
     // Existing membership?
@@ -414,12 +465,15 @@ exports.addMember = async (req, res, next) => {
       dueDate: nextDue(new Date(), plan), // join + 30 days (monthly)
       status: 'active',
       addedBy: req.user.id,
+      photo: avatarUrl || '',                   // gym's copy — never the app avatar
+      registeredVia: 'counter',
+      ...pickGymProfile(req.body),              // email, gender, dob, address, emergency…
     });
     // Notify the whole gym team. Owner is ALWAYS notified (even if the owner added
     // the member); only skip a STAFF member who added it themselves (no self-ping).
     const gym = await Gym.findById(gymId).select('name');
     const excludeId = req.user.role === 'gym_staff' ? req.user.id : undefined;
-    announceNewMember(gymId, gym?.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }, excludeId);
+    announceNewMember(gymId, gym?.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: membership.photo || user.avatar }, excludeId);
     res.status(201).json({ success: true, data: membership });
   } catch (e) { next(e); }
 };
@@ -665,7 +719,7 @@ exports.getAllMembers = async (req, res, next) => {
     const now = new Date();
     const data = memberships.map(m => ({
       _id: m._id,
-      user: m.user,
+      user: gymSideUser(m),  // gym's photo/email wins over the member's app profile
       gym: m.gym,            // { _id, name } — which branch
       plan: m.plan,
       fee: m.fee,
@@ -737,7 +791,7 @@ exports.getMembers = async (req, res, next) => {
     const now = new Date();
     const data = memberships.map(m => ({
       _id: m._id,
-      user: m.user,
+      user: gymSideUser(m),  // gym's photo/email wins over the member's app profile
       plan: m.plan,
       fee: m.fee,
       joinDate: m.joinDate,
@@ -769,18 +823,37 @@ exports.setMemberStatus = async (req, res, next) => {
     try {
       const [gym, u] = await Promise.all([
         Gym.findById(membership.gym).select('name'),
-        User.findById(membership.user).select('name phone avatar'),
+        User.findById(membership.user).select('name phone avatar expoPushToken'),
       ]);
       const LBL = { active: 'reactivated ✅', inactive: 'deactivated ⏸️', blocked: 'blocked 🚫', left: 'marked as left 🚪' };
       const label = LBL[status] || status;
-      const av = u?.avatar ? String(u.avatar) : '';
+
+      // Tell the MEMBER as well — otherwise their app keeps showing the old state
+      // until they happen to reopen the gym card.
+      const MEMBER_MSG = {
+        active: `Your membership at ${gym?.name || 'your gym'} is active again ✅ You can check in as usual.`,
+        inactive: `Your membership at ${gym?.name || 'your gym'} has been deactivated ⏸️ You can't check in until it's reactivated. Please contact the gym.`,
+        blocked: `Your membership at ${gym?.name || 'your gym'} has been blocked 🚫 Please contact the gym team.`,
+        left: `Your membership at ${gym?.name || 'your gym'} is closed 🚪 Contact the gym if this is a mistake.`,
+      };
+      notifyUsers([u], {
+        title: `🏋️ ${gym?.name || 'Your gym'}`,
+        body: MEMBER_MSG[status] || `Your membership status is now ${status}.`,
+        type: status === 'active' ? 'success' : status === 'blocked' ? 'warning' : 'info',
+        data: { screen: 'MyGymCard', kind: 'membership_status', status, gym: gym?.name, membershipId: String(membership._id) },
+      }).catch(() => {});
+
+      const av = membership.photo || (u?.avatar ? String(u.avatar) : '');
+      // A base64 photo can't ride in a push — serve it through the avatar URL,
+      // which only knows the member's User.avatar, so use that route only when
+      // the base64 we're showing IS the User.avatar.
       const imageUrl = av.startsWith('http') ? av
-        : (av.startsWith('data:') ? `${PUBLIC_BASE_URL}/api/gym/avatar/${membership.user}` : undefined);
+        : (av === u?.avatar && av.startsWith('data:') ? `${PUBLIC_BASE_URL}/api/gym/avatar/${membership.user}` : undefined);
       notifyGymTeam(membership.gym, {
         title: `Member ${label} — ${gym?.name || 'your gym'}`,
         body: `${u?.name || 'A member'}${u?.phone ? ` (${u.phone})` : ''} was ${label}.`,
         type: status === 'blocked' ? 'warning' : status === 'active' ? 'success' : 'info',
-        data: { kind: 'member_status', screen: 'GymMemberDetail', gymId: String(membership.gym), membershipId: String(membership._id), memberId: String(membership.user), memberName: u?.name, avatar: u?.avatar || undefined, status },
+        data: { kind: 'member_status', screen: 'GymMemberDetail', gymId: String(membership.gym), membershipId: String(membership._id), memberId: String(membership.user), memberName: u?.name, avatar: av || undefined, status },
         imageUrl,
       });
     } catch (e) { console.log('status notify error:', e.message); }
@@ -812,7 +885,7 @@ exports.getMemberDetail = async (req, res, next) => {
       data: {
         membership: {
           _id: membership._id,
-          user: membership.user,
+          user: gymSideUser(membership),
           plan: membership.plan,
           fee: membership.fee,
           joinDate: membership.joinDate,
@@ -820,6 +893,8 @@ exports.getMemberDetail = async (req, res, next) => {
           lastPaidDate: membership.lastPaidDate,
           status: membership.status,
           isDue: membership.dueDate ? new Date(membership.dueDate) < now : false,
+          // What the member filled in when they registered at THIS gym.
+          profile: gymProfileFields(membership),
         },
         attendance,
         payments,
@@ -831,9 +906,12 @@ exports.getMemberDetail = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-// @desc  Owner/staff updates a member's profile photo from the member detail page.
-//        Owner always; staff needs canAddMember (member management). Uploads to
-//        Cloudinary (falls back to base64 if not configured).
+// @desc  Owner/staff updates the GYM's photo of a member, from the member detail
+//        page. This is the gym's own copy (Membership.photo) — the member's app
+//        profile picture (User.avatar) is deliberately left untouched, so a photo
+//        clicked at the counter never overwrites the one they chose themselves.
+//        Owner always; staff needs canAddMember. Uploads to Cloudinary (falls
+//        back to base64 if not configured).
 exports.updateMemberPhoto = async (req, res, next) => {
   try {
     const { membershipId } = req.params;
@@ -846,8 +924,27 @@ exports.updateMemberPhoto = async (req, res, next) => {
     if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
 
     const avatarUrl = await uploadAvatar(avatar);
-    await User.findByIdAndUpdate(membership.user, { avatar: avatarUrl || '' });
-    res.json({ success: true, message: 'Photo updated', data: { avatar: avatarUrl || '' } });
+    membership.photo = avatarUrl || '';
+    await membership.save();
+    res.json({ success: true, message: 'Photo updated', data: { avatar: membership.photo, gymPhoto: membership.photo } });
+  } catch (e) { next(e); }
+};
+
+// @desc  Owner/staff edits the gym-registration details of a member (email,
+//        gender, DOB, address, emergency contact…). Gym-scoped — never writes to
+//        the member's own FitAI profile.
+exports.updateMemberProfile = async (req, res, next) => {
+  try {
+    const { membershipId } = req.params;
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ success: false, message: 'Member not found' });
+    if (!(await ownsGym(req.user, membership.gym))) return res.status(403).json({ success: false, message: 'Not your gym' });
+    if (!staffCan(req.user, 'canAddMember')) return denyStaff(res, 'edit member details');
+    if (denyIfSuspended(res, await Gym.findById(membership.gym).select('isActive'))) return;
+
+    Object.assign(membership, pickGymProfile(req.body));
+    await membership.save();
+    res.json({ success: true, message: 'Details updated', data: gymProfileFields(membership) });
   } catch (e) { next(e); }
 };
 
@@ -1067,7 +1164,7 @@ exports.getGymFees = async (req, res, next) => {
         bucket = diff < 0 ? 'overdue' : diff === 0 ? 'today' : diff <= 7 ? 'upcoming' : 'ok';
       }
       return {
-        _id: m._id, user: m.user, plan: m.plan, fee,
+        _id: m._id, user: gymSideUser(m), plan: m.plan, fee,
         dueDate: m.dueDate, lastPaidDate: m.lastPaidDate, status: m.status,
         bucket, daysDiff: diff,
         pending: (bucket === 'overdue' || bucket === 'today') ? fee : 0,
@@ -1124,14 +1221,25 @@ exports.getGymAttendance = async (req, res, next) => {
     const filter = { gym: gymId };
     if (day) filter.day = day;
     if (userId) filter.user = userId;
-    const list = await GymAttendance.find(filter).populate('user', 'name phone avatar').sort({ checkInAt: -1 }).limit(200);
+    const list = await GymAttendance.find(filter)
+      .populate('user', 'name phone avatar')
+      .populate('membership', 'photo')     // gym's own photo of the member
+      .sort({ checkInAt: -1 }).limit(200);
 
     // Count this month's check-ins (useful when filtering by member)
     const monthStart = new Date();
     monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const thisMonth = list.filter(a => new Date(a.checkInAt) >= monthStart).length;
 
-    res.json({ success: true, count: list.length, thisMonth, data: list });
+    // Show the gym's photo where it has one, without changing the response shape.
+    const data = list.map((a) => {
+      const o = a.toObject();
+      const photo = o.membership?.photo;
+      if (photo && o.user) o.user = { ...o.user, avatar: photo };
+      return o;
+    });
+
+    res.json({ success: true, count: list.length, thisMonth, data });
   } catch (e) { next(e); }
 };
 
@@ -1249,8 +1357,14 @@ exports.getMyCard = async (req, res, next) => {
       membershipId: m._id,
       gym: m.gym,
       plan: m.plan,
+      // The member's own app must reflect what the gym set — status, fee and the
+      // due date all come straight from the membership on every load.
       status: m.status,
+      fee: m.fee,
+      joinDate: m.joinDate,
       dueDate: m.dueDate,
+      lastPaidDate: m.lastPaidDate,
+      canCheckIn: !NO_CHECKIN_STATUSES.includes(m.status),
       isDue: m.dueDate ? new Date(m.dueDate) < now : false,
     }));
     res.json({
@@ -1277,11 +1391,25 @@ exports.getMyAttendance = async (req, res, next) => {
 };
 
 // @desc  Member self check-in by scanning a gym's QR (gymCode)
+//        FIRST scan at a gym → the app is told to show the registration form
+//        (`needsRegistration`), exactly like the public web check-in page asks a
+//        new walk-in for their details. The form comes back as `profile` with the
+//        short-lived `regToken` and THEN the membership is created and attendance
+//        marked. Already a member → straight to attendance, no form. An older app
+//        build (no `canRegister` in the body) keeps the original behaviour: the
+//        first scan just joins the gym and marks attendance.
 exports.selfCheckIn = async (req, res, next) => {
   try {
-    let { gymCode, token } = req.body;
-    // Live encrypted QR token (preferred) → decrypt + enforce ~4-min expiry
-    if (token) {
+    let { gymCode, token, regToken, profile, skipProfile, canRegister } = req.body;
+    // Step 2 of registration — the wall QR's 4-min token has usually expired by
+    // the time the form is filled, so registration carries its own 15-min token.
+    if (regToken) {
+      const t = readRegToken(regToken);
+      if (t.expired) return res.status(400).json({ success: false, message: 'Took too long — scan the gym QR again' });
+      if (t.invalid || !t.gymCode) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
+      gymCode = t.gymCode;
+    } else if (token) {
+      // Live encrypted QR token (preferred) → decrypt + enforce ~4-min expiry
       const t = readCheckinToken(token);
       if (t.expired) return res.status(400).json({ success: false, message: 'QR expired — scan the live counter QR again' });
       if (t.invalid || !t.gymCode) return res.status(400).json({ success: false, message: 'Invalid gym QR' });
@@ -1291,16 +1419,48 @@ exports.selfCheckIn = async (req, res, next) => {
     if (!gym) return res.status(404).json({ success: false, message: 'Invalid gym QR' });
     if (denyIfSuspended(res, gym, true)) return;
 
-    // Open model: auto-create membership if none
     let membership = await Membership.findOne({ user: req.user.id, gym: gym._id });
     let isNew = false;
     if (!membership) {
+      // Not a member of this gym yet → ask once for the details the gym needs.
+      // Only a build that knows the form may be sent to it: `canRegister` is the
+      // app saying "I can show it". Installs already in users' hands don't send
+      // it, and for them the first scan must keep silently joining the gym as it
+      // always did — otherwise this deploy would leave them un-checked-in with a
+      // message their build has no screen for.
+      if (canRegister && !profile && !skipProfile) {
+        const email = req.user.email && !/@fitai\.(temp|local)$/i.test(req.user.email) ? req.user.email : '';
+        return res.json({
+          success: true,
+          message: `You're new at ${gym.name} — register to check in`,
+          data: {
+            needsRegistration: true,
+            regToken: mintRegToken(gym.gymCode),
+            gym: { _id: gym._id, name: gym.name, location: gym.location || '', gymCode: gym.gymCode },
+            prefill: { name: req.user.name || '', phone: req.user.phone || '', email, avatar: req.user.avatar || '' },
+          },
+        });
+      }
+
       isNew = true;
+      // The gym gets its own copy of the photo — the member's app avatar is not touched.
+      const photoUrl = profile?.avatar ? await uploadAvatar(profile.avatar) : '';
       membership = await Membership.create({
         user: req.user.id, gym: gym._id, plan: 'trial', fee: 0,
         joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
+        photo: photoUrl || '',
+        registeredVia: 'app_scan',
+        ...pickGymProfile(profile || {}),
       });
-      announceNewMember(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, phone: req.user.phone, avatar: req.user.avatar }, req.user.id);
+      // A placeholder account created by a gym has name "Member" — let the member
+      // fix it here. An account they already named is left alone.
+      try {
+        const nm = String(profile?.name || '').trim();
+        if (nm && (!req.user.name || req.user.name === 'Member')) {
+          await User.findByIdAndUpdate(req.user.id, { name: nm.slice(0, 80) });
+        }
+      } catch (e) {}
+      announceNewMember(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: profile?.name || req.user.name, phone: req.user.phone, avatar: membership.photo || req.user.avatar }, req.user.id);
     }
     const blk = memberBlockedMsg(membership);
     if (blk) return res.status(403).json({ success: false, message: blk });
@@ -1310,7 +1470,7 @@ exports.selfCheckIn = async (req, res, next) => {
       const msg = isNew
         ? `You're registered! ${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. Attendance is marked only during gym hours.`
         : `${gym.name} is closed right now${lbl ? ` (open ${lbl})` : ''}. Attendance can be marked only during gym hours.`;
-      return res.json({ success: true, data: { gym: gym.name, closed: true }, message: msg });
+      return res.json({ success: true, data: { gym: gym.name, closed: true, registered: isNew }, message: msg });
     }
     const day = istDay();
     try {
@@ -1318,8 +1478,12 @@ exports.selfCheckIn = async (req, res, next) => {
         user: req.user.id, gym: gym._id, membership: membership._id, day, method: 'self_scan',
       });
       // Member self-scanned → notify the whole team (owner + staff).
-      announceCheckin(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, avatar: req.user.avatar }, 'self_scan', req.user.id);
-      return res.status(201).json({ success: true, message: `Checked in at ${gym.name}`, data: { gym: gym.name } });
+      announceCheckin(gym._id, gym.name, { id: req.user.id, membershipId: membership._id, name: req.user.name, avatar: membership.photo || req.user.avatar }, 'self_scan', req.user.id);
+      return res.status(201).json({
+        success: true,
+        message: isNew ? `Registered at ${gym.name} — you're checked in ✅` : `Checked in at ${gym.name}`,
+        data: { gym: gym.name, registered: isNew },
+      });
     } catch (dupErr) {
       if (dupErr.code === 11000) return res.json({ success: true, message: `Already checked in at ${gym.name} today`, data: { gym: gym.name, duplicate: true } });
       throw dupErr;
@@ -1557,6 +1721,11 @@ function readToken(token, expectedType) {
 }
 const mintCheckinToken = (gymCode) => mintToken(gymCode, 'c', CHECKIN_TTL_MS);
 const readCheckinToken = (token) => readToken(token, 'c');
+// Registration token — handed out when a first-time scanner is sent to the
+// join form, so filling it in doesn't race the 4-minute wall-QR expiry.
+const REG_TTL_MS = 15 * 60 * 1000;
+const mintRegToken = (gymCode) => mintToken(gymCode, 'r', REG_TTL_MS);
+const readRegToken = (token) => readToken(token, 'r');
 const mintKioskToken = (gymCode) => mintToken(gymCode, 'k', KIOSK_TTL_MS);
 const readKioskToken = (token) => readToken(token, 'k');
 const SETLOC_TTL_MS = 20 * 60 * 1000; // owner has 20 min to set the gym location
@@ -1746,14 +1915,21 @@ const newPersonFormPage = (gym, phone, lat, lng) => PAGE_SHELL(`
   })();
   </script>`, gym.gymCode);
 
-// Existing user → ensure membership (trial) + mark today's attendance
-async function attendUser(gym, user) {
+// Existing user → ensure membership (trial) + mark today's attendance.
+// `extras` carries what the web registration form collected (photo, email) — it
+// lands on the MEMBERSHIP, so the gym has its own copy and the member's app
+// profile photo stays theirs.
+async function attendUser(gym, user, extras = {}) {
   let membership = await Membership.findOne({ user: user._id, gym: gym._id });
   let isNew = false;
   if (!membership) {
     isNew = true;
-    membership = await Membership.create({ user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active' });
-    announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: user.avatar }); // public join → notify whole team
+    membership = await Membership.create({
+      user: user._id, gym: gym._id, plan: 'trial', fee: 0, joinDate: new Date(), dueDate: addMonths(new Date(), 0), status: 'active',
+      photo: extras.photo || '', registeredVia: extras.registeredVia || 'web',
+      ...pickGymProfile(extras),
+    });
+    announceNewMember(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, phone: user.phone, avatar: membership.photo || user.avatar }); // public join → notify whole team
   }
   if (memberBlockedMsg(membership)) return { blocked: true, blockedMsg: memberBlockedMsg(membership) };
   // Registration above happens any time; attendance is only marked during gym hours.
@@ -1762,7 +1938,7 @@ async function attendUser(gym, user) {
   try {
     await GymAttendance.create({ user: user._id, gym: gym._id, membership: membership._id, day, method: 'self_scan' });
     // Notify the gym team on this check-in (owner + staff).
-    announceCheckin(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, avatar: user.avatar }, 'self_scan');
+    announceCheckin(gym._id, gym.name, { id: user._id, membershipId: membership._id, name: user.name, avatar: membership.photo || user.avatar }, 'self_scan');
     return { duplicate: false };
   } catch (e) {
     if (e.code === 11000) return { duplicate: true };
@@ -2038,12 +2214,12 @@ exports.gymPublicRegister = async (req, res) => {
     let user = await User.findOne({ phone }); // double-check (race)
     if (!user) {
       // Only set email if the user actually provided a real one; else leave empty.
+      // A brand-new account has no photo of its own, so seeding the app avatar
+      // here is safe; for someone who already has an account we only keep the
+      // photo on the membership below.
       user = await User.create({ name, phone, ...(cleanEmail ? { email: cleanEmail } : {}), role: 'user', avatar: avatarUrl });
-    } else if (avatar && !user.avatar) {
-      // try { user.avatar = avatar; await user.save(); } catch (e) {} // OLD: base64
-      try { user.avatar = avatarUrl; await user.save(); } catch (e) {}
     }
-    const r = await attendUser(gym, user);
+    const r = await attendUser(gym, user, { photo: avatarUrl || '', email: cleanEmail || '', registeredVia: 'web' });
     const hist = await attendanceHtml(gym, user);
     res.setHeader('Set-Cookie', `gphone=${encodeURIComponent(phone)}; Max-Age=${60 * 60 * 24 * 365}; Path=/; SameSite=Lax`);
     res.send(attendPage(gym, r, user, 'Registered & attendance marked! Pay your fee at the counter.', hist) + credStoreScript(phone, user.name));
