@@ -1395,10 +1395,12 @@ exports.getMyAttendance = async (req, res, next) => {
 //        (`needsRegistration`), exactly like the public web check-in page asks a
 //        new walk-in for their details. The form comes back as `profile` with the
 //        short-lived `regToken` and THEN the membership is created and attendance
-//        marked. Already a member → straight to attendance, no form.
+//        marked. Already a member → straight to attendance, no form. An older app
+//        build (no `canRegister` in the body) keeps the original behaviour: the
+//        first scan just joins the gym and marks attendance.
 exports.selfCheckIn = async (req, res, next) => {
   try {
-    let { gymCode, token, regToken, profile, skipProfile } = req.body;
+    let { gymCode, token, regToken, profile, skipProfile, canRegister } = req.body;
     // Step 2 of registration — the wall QR's 4-min token has usually expired by
     // the time the form is filled, so registration carries its own 15-min token.
     if (regToken) {
@@ -1421,7 +1423,12 @@ exports.selfCheckIn = async (req, res, next) => {
     let isNew = false;
     if (!membership) {
       // Not a member of this gym yet → ask once for the details the gym needs.
-      if (!profile && !skipProfile) {
+      // Only a build that knows the form may be sent to it: `canRegister` is the
+      // app saying "I can show it". Installs already in users' hands don't send
+      // it, and for them the first scan must keep silently joining the gym as it
+      // always did — otherwise this deploy would leave them un-checked-in with a
+      // message their build has no screen for.
+      if (canRegister && !profile && !skipProfile) {
         const email = req.user.email && !/@fitai\.(temp|local)$/i.test(req.user.email) ? req.user.email : '';
         return res.json({
           success: true,
