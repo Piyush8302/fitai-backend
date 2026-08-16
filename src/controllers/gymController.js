@@ -13,6 +13,20 @@ const { uploadAvatar } = require('../utils/cloudinary');
 // ---- helpers ----
 const istDay = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().split('T')[0];
 
+// Rupee amounts arriving from a client. The app caps its own inputs, but the
+// API answers anyone with a token, so every figure that lands in a gym's books
+// is checked here too. Returns null when fine, or the message to send back.
+const MAX_RUPEES = 10000000; // ₹1,00,00,000
+const money = (value, label = 'Amount', { min = 0 } = {}) => {
+  const n = Number(value);
+  if (value === undefined || value === null || value === '' || !Number.isFinite(n)) {
+    return `${label} is required and must be a number`;
+  }
+  if (n < min) return `${label} must be at least ${min}`;
+  if (n > MAX_RUPEES) return `${label} is too large`;
+  return null;
+};
+
 // Current time in IST as minutes-since-midnight
 const istMinutes = () => { const d = new Date(Date.now() + 5.5 * 3600 * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
 const hhmmToMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
@@ -432,6 +446,8 @@ exports.addMember = async (req, res, next) => {
   try {
     const { gymId, name, phone, plan = 'monthly', fee = 0, avatar } = req.body;
     if (!gymId || !phone) return res.status(400).json({ success: false, message: 'gymId and phone required' });
+    const feeError = money(fee, 'Fee');
+    if (feeError) return res.status(400).json({ success: false, message: feeError });
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
     if (!staffCan(req.user, 'canAddMember')) return denyStaff(res, 'add members');
     if (denyIfSuspended(res, await Gym.findById(gymId).select('isActive'))) return;
@@ -489,6 +505,10 @@ exports.addStaff = async (req, res, next) => {
     if (denyIfSuspended(res, await Gym.findById(gymId).select('isActive'))) return;
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });
+    if (salary !== undefined && salary !== null && salary !== '') {
+      const salaryError = money(salary, 'Salary');
+      if (salaryError) return res.status(400).json({ success: false, message: salaryError });
+    }
 
     // Email is required for staff — they can log in with it, and it's how we
     // reach them if the number changes.
@@ -604,6 +624,10 @@ exports.updateStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;
     const { name, staffRole, salary, gymId } = req.body;
+    if (salary !== undefined && salary !== null && salary !== '') {
+      const salaryError = money(salary, 'Salary');
+      if (salaryError) return res.status(400).json({ success: false, message: salaryError });
+    }
     const staff = await User.findById(staffId);
     if (!staff || staff.role !== 'gym_staff') return res.status(404).json({ success: false, message: 'Staff not found' });
     // The owner must own at least one of the gyms this staff works at.
@@ -952,6 +976,11 @@ exports.updateMemberProfile = async (req, res, next) => {
 exports.markPayment = async (req, res, next) => {
   try {
     const { membershipId, amount, plan, periodMonths, dueDate } = req.body;
+    // `amount` is written onto the membership fee and into the cashbook, and
+    // nothing here checked it — a negative or absurd figure went straight into
+    // the gym's books.
+    const amountError = money(amount, 'Amount');
+    if (amountError) return res.status(400).json({ success: false, message: amountError });
     // Anything other than an explicit 'online' is cash — keeps old app builds,
     // which don't send this field at all, working exactly as before.
     const method = req.body.method === 'online' ? 'online' : 'cash';
@@ -1250,7 +1279,11 @@ exports.addCashEntry = async (req, res, next) => {
   try {
     const { gymId, type, amount, description, date } = req.body;
     if (!(await ownsGym(req.user, gymId))) return res.status(403).json({ success: false, message: 'Not your gym' });
-    if (!['income', 'expense'].includes(type) || !amount) return res.status(400).json({ success: false, message: 'type and amount required' });
+    if (!['income', 'expense'].includes(type)) return res.status(400).json({ success: false, message: 'type must be income or expense' });
+    // `!amount` let a negative through — it is truthy. An expense of -5000 read
+    // as income once the month was totalled.
+    const amountError = money(amount, 'Amount', { min: 1 });
+    if (amountError) return res.status(400).json({ success: false, message: amountError });
     const method = req.body.method === 'online' ? 'online' : 'cash';
     const entry = await GymCashbook.create({ gym: gymId, type, amount, description, method, date: date || new Date(), createdBy: req.user.id });
     res.status(201).json({ success: true, data: entry });

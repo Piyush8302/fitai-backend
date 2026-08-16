@@ -15,10 +15,13 @@ const userSchema = new mongoose.Schema({
   // Profile
   age: { type: Number, min: 10, max: 100 },
   gender: { type: String, enum: ['male', 'female', 'other'] },
-  height: { type: Number }, // in cm
-  weight: { type: Number }, // in kg
-  targetWeight: { type: Number },
-  startWeight: { type: Number }, // weight when goal was set — for progress %
+  // `age` had bounds; these three did not, so a height of 99999 or a weight of
+  // -50 was stored and the pre-save hook below then recalculated BMR, BMI,
+  // daily calories and protein from it.
+  height: { type: Number, min: 50, max: 275 }, // in cm
+  weight: { type: Number, min: 20, max: 300 }, // in kg
+  targetWeight: { type: Number, min: 20, max: 300 },
+  startWeight: { type: Number, min: 20, max: 300 }, // weight when goal was set — for progress %
   activityLevel: {
     type: String,
     enum: ['sedentary', 'lightly_active', 'moderately_active', 'very_active', 'extra_active'],

@@ -12,14 +12,29 @@ const getTodayIST = () => {
   return istNow;
 };
 
+// What a client is allowed to write for a day. This used to spread the whole
+// request body, so any field in the schema could be set from outside — a client
+// could hand itself a caloriesGoal, or write the meal list directly, bypassing
+// logMeal. Anything not on this list is now ignored rather than trusted.
+const DAILY_FIELDS = [
+  'weight', 'caloriesConsumed', 'caloriesBurned', 'waterIntake', 'steps',
+  'sleepHours', 'workoutCompleted', 'workoutMinutes', 'workoutId', 'mood',
+  'proteinConsumed', 'carbsConsumed', 'fatConsumed', 'notes',
+];
+
 // @desc    Log/update daily tracking
 exports.logDaily = async (req, res, next) => {
   try {
     const today = getTodayIST();
 
+    const updates = {};
+    for (const f of DAILY_FIELDS) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
     const tracking = await Tracking.findOneAndUpdate(
       { user: req.user.id, date: today },
-      { $set: { ...req.body, user: req.user.id, date: today } },
+      { $set: { ...updates, user: req.user.id, date: today } },
       { new: true, upsert: true, runValidators: true }
     );
 
