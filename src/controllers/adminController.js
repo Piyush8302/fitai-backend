@@ -260,9 +260,60 @@ const gymMonthSummary = async (gymId, r) => {
   };
 };
 
+// All-time summary for a gym. No month filtering, no daily breakdown,
+// just total collected, joined, and checkins from day one.
+const gymAllTimeSummary = async (gymId, gym) => {
+  const Membership = require('../models/Membership');
+  const GymPayment = require('../models/GymPayment');
+  const GymAttendance = require('../models/GymAttendance');
+  const GymCashbook = require('../models/GymCashbook');
+
+  const [payFacet, cashRows, joined, totalAtEnd, totalCheckins] = await Promise.all([
+    GymPayment.aggregate([
+      { $match: { gym: gymId } },
+      { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    GymCashbook.aggregate([
+      { $match: { gym: gymId } },
+      { $group: { _id: '$type', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    Membership.countDocuments({ gym: gymId }),
+    Membership.countDocuments({ gym: gymId }),
+    GymAttendance.countDocuments({ gym: gymId }),
+  ]);
+
+  const byMethod = (rows, id) => rows.find((x) => x._id === id)?.amount || 0;
+  const collected = payFacet.reduce((s, x) => s + x.amount, 0);
+  const income = byMethod(cashRows, 'income');
+  const expense = byMethod(cashRows, 'expense');
+
+  return {
+    key: 'all-time',
+    label: 'All time',
+    from: gym.createdAt,
+    to: new Date(),
+    collection: {
+      total: collected,
+      count: payFacet.reduce((s, x) => s + x.count, 0),
+      cash: byMethod(payFacet, 'cash'),
+      online: byMethod(payFacet, 'online'),
+    },
+    cashbook: { income, expense, net: income - expense },
+    members: { joined, totalAtEnd },
+    attendance: {
+      checkins: totalCheckins,
+      uniqueMembers: 0,  // can't easily get unique members without aggregation pipeline
+      activeDays: 0,     // no concept of "active days" for all-time
+      busiestDay: null,
+      daily: [],
+    },
+  };
+};
+
 // @desc  A month's activity for one gym — money in and out, who joined, how
 //        often members actually turned up — with the previous month for context
 //        and the rows behind each number. GET /api/admin/gyms/:id/monthly?month=YYYY-MM
+//        Pass month=all-time for all-time summary (no previous month, no daily).
 exports.getGymMonthly = async (req, res, next) => {
   try {
     const Membership = require('../models/Membership');
@@ -273,7 +324,54 @@ exports.getGymMonthly = async (req, res, next) => {
     if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
 
     const gymId = gym._id;
-    const r = istMonth(req.query.month);
+    const isAllTime = req.query.month === 'all-time';
+    const r = isAllTime ? null : istMonth(req.query.month);
+
+    // All-time summary — all months combined, no previous month, no daily
+    if (isAllTime) {
+      const [summary, payments, joinedMembers, expenses] = await Promise.all([
+        gymAllTimeSummary(gymId, gym),
+        GymPayment.find({ gym: gymId }).populate('user', 'name phone').sort({ paidDate: -1 }).limit(100).lean(),
+        Membership.find({ gym: gymId }).populate('user', 'name phone').sort({ joinDate: -1 }).limit(100).lean(),
+        GymCashbook.find({ gym: gymId, type: 'expense' }).sort({ date: -1 }).limit(100).lean(),
+      ]);
+
+      const months = [];
+      const start = new Date(gym.createdAt || Date.now());
+      const cur = new Date(Date.now() + IST_MS);
+      for (let y = cur.getUTCFullYear(), m = cur.getUTCMonth(); ; m--) {
+        if (m < 0) { m = 11; y--; }
+        const key = `${y}-${String(m + 1).padStart(2, '0')}`;
+        months.push(key);
+        if (months.length >= 36 || new Date(Date.UTC(y, m, 1)) <= new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))) break;
+      }
+      months.unshift('all-time');
+
+      return res.json({
+        success: true,
+        data: {
+          gym: { _id: gym._id, name: gym.name, createdAt: gym.createdAt },
+          months,
+          month: summary,
+          prevMonth: null,
+          dues: { count: 0, amount: 0, list: [] },
+          payments: payments.map((p) => ({
+            _id: p._id, user: p.user, amount: p.amount, plan: p.plan,
+            method: p.method, paidDate: p.paidDate, note: p.note || '',
+          })),
+          joinedMembers: joinedMembers.map((m) => ({
+            _id: m._id, user: m.user, plan: m.plan, fee: m.fee,
+            status: m.status, joinDate: m.joinDate, registeredVia: m.registeredVia || 'counter',
+          })),
+          expenses: expenses.map((e) => ({
+            _id: e._id, amount: e.amount, description: e.description || '',
+            date: e.date, method: e.method,
+          })),
+        },
+      });
+    }
+
+    // Regular month view
     const inMonth = { $gte: r.from, $lt: r.to };
 
     const [summary, prev, payments, joinedMembers, expenses, dueThisMonth] = await Promise.all([
@@ -291,15 +389,15 @@ exports.getGymMonthly = async (req, res, next) => {
         .populate('user', 'name phone').sort({ dueDate: 1 }).limit(100).lean(),
     ]);
 
-    // The months worth offering in the picker: from the gym's first month to now.
-    const months = [];
+    // The months worth offering in the picker: from the gym's first month to now, plus all-time.
+    const months = ['all-time'];
     const start = new Date(gym.createdAt || Date.now());
     const cur = new Date(Date.now() + IST_MS);
     for (let y = cur.getUTCFullYear(), m = cur.getUTCMonth(); ; m--) {
       if (m < 0) { m = 11; y--; }
       const key = `${y}-${String(m + 1).padStart(2, '0')}`;
       months.push(key);
-      if (months.length >= 36 || new Date(Date.UTC(y, m, 1)) <= new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))) break;
+      if (months.length >= 37 || new Date(Date.UTC(y, m, 1)) <= new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))) break;
     }
 
     res.json({
