@@ -88,6 +88,33 @@ const userSchema = new mongoose.Schema({
   staffStatus: { type: String, enum: ['active', 'inactive', 'blocked', 'left'], default: 'active' },
 }, { timestamps: true });
 
+// Heal documents that predate the min/max rules above.
+//
+// save() validates the WHOLE document, not just the fields being changed. So a
+// user whose stored weight or startWeight is out of range — written before
+// these limits existed — could no longer save anything at all: changing only
+// their name would fail on a field they never touched. Caught on staging,
+// where an account left with startWeight -50 was locked out of every update.
+//
+// Runs before validation, and only on values already outside the range, so a
+// bad figure sent in this request is still rejected rather than quietly fixed.
+const RANGES = { age: [10, 100], height: [50, 275], weight: [20, 300], targetWeight: [20, 300], startWeight: [20, 300] };
+userSchema.pre('validate', function (next) {
+  for (const [field, [min, max]] of Object.entries(RANGES)) {
+    const v = this[field];
+    if (v === undefined || v === null) continue;
+    if (this.isModified(field)) continue;     // this request's own value — let it be judged
+    if (typeof v !== 'number' || Number.isNaN(v) || v < min || v > max) {
+      // startWeight is derived from weight, so it can be rebuilt; the rest are
+      // the member's own figures and are better cleared than guessed at.
+      this[field] = (field === 'startWeight' && typeof this.weight === 'number' && this.weight >= min && this.weight <= max)
+        ? this.weight
+        : undefined;
+    }
+  }
+  next();
+});
+
 // Never store an empty-string email — normalise '' to undefined so the sparse
 // unique index skips it (empty strings would otherwise collide with each other).
 userSchema.pre('save', function (next) {
