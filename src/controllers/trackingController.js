@@ -1,5 +1,12 @@
 const Tracking = require('../models/Tracking');
 const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
+const { unlockFor } = require('./achievementsController');
+
+// Badges used to unlock only when the member opened the Badges screen and it
+// posted /check. Log a workout on Monday and the badge appeared on Friday, if
+// they happened to look. Every write that a badge measures now runs the same
+// unlock pass — not awaited, so it never slows the reply or fails it.
+const refreshBadges = (user) => { unlockFor(user).catch(() => {}); };
 
 // Helper: Get today's date in IST (UTC+5:30) at midnight
 const getTodayIST = () => {
@@ -38,6 +45,7 @@ exports.logDaily = async (req, res, next) => {
       { new: true, upsert: true, runValidators: true }
     );
 
+    refreshBadges(req.user);
     const data = tracking.toObject();
     data.caloriesGoal = getGoalAdjustedCalories(req.user);
     res.json({ success: true, data });
@@ -86,6 +94,7 @@ exports.addWater = async (req, res, next) => {
       await tracking.save();
     }
 
+    refreshBadges(req.user);
     res.json({ success: true, data: { waterIntake: tracking.waterIntake, waterGoal: tracking.waterGoal } });
   } catch (error) {
     next(error);
@@ -109,6 +118,7 @@ exports.logMeal = async (req, res, next) => {
       { new: true, upsert: true }
     );
 
+    refreshBadges(req.user);
     const data = tracking.toObject();
     data.caloriesGoal = getGoalAdjustedCalories(req.user);
     res.json({ success: true, data });
