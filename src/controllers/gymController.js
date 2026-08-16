@@ -1471,8 +1471,31 @@ exports.selfCheckIn = async (req, res, next) => {
             regToken: mintRegToken(gym.gymCode),
             gym: { _id: gym._id, name: gym.name, location: gym.location || '', gymCode: gym.gymCode },
             prefill: { name: req.user.name || '', phone: req.user.phone || '', email, avatar: req.user.avatar || '' },
+            // Signing in with Google leaves the account with no phone number at
+            // all. The gym has no other way to reach that member, so the form
+            // must ask for one instead of showing an empty locked field.
+            needsPhone: !req.user.phone,
           },
         });
+      }
+
+      // A gym needs a number it can actually ring. Members who signed in with
+      // Google have none — the field on the join form used to be locked and
+      // simply showed blank, so the gym ended up with a member it could not
+      // contact. Ask once, here, and keep it on the account so it doubles as a
+      // login. Only enforced for builds that can show the form; installs
+      // already in users' hands keep joining silently as before.
+      if (!req.user.phone && (canRegister || profile)) {
+        const digits = String(profile?.phone || '').replace(/\D/g, '');
+        if (digits.length !== 10) {
+          return res.status(400).json({ success: false, message: 'A 10-digit mobile number is required to join a gym.' });
+        }
+        const taken = await User.findOne({ phone: digits, _id: { $ne: req.user.id } }).select('_id');
+        if (taken) {
+          return res.status(409).json({ success: false, message: 'That mobile number is already used by another FitAI account.' });
+        }
+        await User.findByIdAndUpdate(req.user.id, { phone: digits });
+        req.user.phone = digits;
       }
 
       isNew = true;
