@@ -15,10 +15,13 @@ const userSchema = new mongoose.Schema({
   // Profile
   age: { type: Number, min: 10, max: 100 },
   gender: { type: String, enum: ['male', 'female', 'other'] },
-  height: { type: Number }, // in cm
-  weight: { type: Number }, // in kg
-  targetWeight: { type: Number },
-  startWeight: { type: Number }, // weight when goal was set — for progress %
+  // `age` had bounds; these three did not, so a height of 99999 or a weight of
+  // -50 was stored and the pre-save hook below then recalculated BMR, BMI,
+  // daily calories and protein from it.
+  height: { type: Number, min: 50, max: 275 }, // in cm
+  weight: { type: Number, min: 20, max: 300 }, // in kg
+  targetWeight: { type: Number, min: 20, max: 300 },
+  startWeight: { type: Number, min: 20, max: 300 }, // weight when goal was set — for progress %
   activityLevel: {
     type: String,
     enum: ['sedentary', 'lightly_active', 'moderately_active', 'very_active', 'extra_active'],
@@ -84,6 +87,33 @@ const userSchema = new mongoose.Schema({
   // Staff account status (owner-managed). Non-active staff can't perform gym actions.
   staffStatus: { type: String, enum: ['active', 'inactive', 'blocked', 'left'], default: 'active' },
 }, { timestamps: true });
+
+// Heal documents that predate the min/max rules above.
+//
+// save() validates the WHOLE document, not just the fields being changed. So a
+// user whose stored weight or startWeight is out of range — written before
+// these limits existed — could no longer save anything at all: changing only
+// their name would fail on a field they never touched. Caught on staging,
+// where an account left with startWeight -50 was locked out of every update.
+//
+// Runs before validation, and only on values already outside the range, so a
+// bad figure sent in this request is still rejected rather than quietly fixed.
+const RANGES = { age: [10, 100], height: [50, 275], weight: [20, 300], targetWeight: [20, 300], startWeight: [20, 300] };
+userSchema.pre('validate', function (next) {
+  for (const [field, [min, max]] of Object.entries(RANGES)) {
+    const v = this[field];
+    if (v === undefined || v === null) continue;
+    if (this.isModified(field)) continue;     // this request's own value — let it be judged
+    if (typeof v !== 'number' || Number.isNaN(v) || v < min || v > max) {
+      // startWeight is derived from weight, so it can be rebuilt; the rest are
+      // the member's own figures and are better cleared than guessed at.
+      this[field] = (field === 'startWeight' && typeof this.weight === 'number' && this.weight >= min && this.weight <= max)
+        ? this.weight
+        : undefined;
+    }
+  }
+  next();
+});
 
 // Never store an empty-string email — normalise '' to undefined so the sparse
 // unique index skips it (empty strings would otherwise collide with each other).

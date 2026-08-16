@@ -1,10 +1,14 @@
 const mongoose = require('mongoose');
+const { BADGE_TYPES } = require('../utils/badges');
 
 const achievementSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  // Taken straight from the catalogue. This list was maintained by hand and had
+  // fallen four badges behind it — saving one of those threw a validation error,
+  // which aborted the unlock loop and stopped every later badge too.
   type: {
     type: String,
-    enum: ['streak', 'workout_count', 'water_goal', 'weight_milestone', 'first_workout', 'first_meal_log', 'chat_starter', 'profile_complete', 'seven_day_streak', 'thirty_day_streak', 'hundred_workouts'],
+    enum: BADGE_TYPES,
     required: true,
   },
   title: { type: String, required: true },

@@ -343,7 +343,13 @@ exports.analyzeFoodPhoto = async (req, res, next) => {
     }
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      // Deliberately the moving alias, not a pinned version. `gemini-2.0-flash`
+      // was hard-coded here and Google retired it — the call started 404ing and
+      // the feature was dead with nothing in the app to explain why. The alias
+      // keeps working as models turn over; the cost is an occasional 503 when
+      // the shared pool is busy, which the 502 branch below already tells the
+      // user to retry.
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -366,7 +372,14 @@ exports.analyzeFoodPhoto = async (req, res, next) => {
       return res.status(502).json({ success: false, message: 'Could not read the photo right now. Please try again.' });
     }
 
-    const parsed = extractJson(data?.candidates?.[0]?.content?.parts?.[0]?.text);
+    // Newer models split a reply across several parts (reasoning first, answer
+    // after), so reading parts[0] alone can pick up an empty one. Join whatever
+    // text came back and let extractJson find the array in it.
+    const replyText = (data?.candidates?.[0]?.content?.parts || [])
+      .map((p) => p?.text)
+      .filter(Boolean)
+      .join('\n');
+    const parsed = extractJson(replyText);
     if (!Array.isArray(parsed)) {
       return res.status(422).json({ success: false, message: "Couldn't identify the food. Try a clearer, closer photo." });
     }

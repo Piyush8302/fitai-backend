@@ -1,5 +1,12 @@
 const Tracking = require('../models/Tracking');
 const { getGoalAdjustedCalories } = require('../utils/calorieGoal');
+const { unlockFor } = require('./achievementsController');
+
+// Badges used to unlock only when the member opened the Badges screen and it
+// posted /check. Log a workout on Monday and the badge appeared on Friday, if
+// they happened to look. Every write that a badge measures now runs the same
+// unlock pass — not awaited, so it never slows the reply or fails it.
+const refreshBadges = (user) => { unlockFor(user).catch(() => {}); };
 
 // Helper: Get today's date in IST (UTC+5:30) at midnight
 const getTodayIST = () => {
@@ -12,17 +19,33 @@ const getTodayIST = () => {
   return istNow;
 };
 
+// What a client is allowed to write for a day. This used to spread the whole
+// request body, so any field in the schema could be set from outside — a client
+// could hand itself a caloriesGoal, or write the meal list directly, bypassing
+// logMeal. Anything not on this list is now ignored rather than trusted.
+const DAILY_FIELDS = [
+  'weight', 'caloriesConsumed', 'caloriesBurned', 'waterIntake', 'steps',
+  'sleepHours', 'workoutCompleted', 'workoutMinutes', 'workoutId', 'mood',
+  'proteinConsumed', 'carbsConsumed', 'fatConsumed', 'notes',
+];
+
 // @desc    Log/update daily tracking
 exports.logDaily = async (req, res, next) => {
   try {
     const today = getTodayIST();
 
+    const updates = {};
+    for (const f of DAILY_FIELDS) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
     const tracking = await Tracking.findOneAndUpdate(
       { user: req.user.id, date: today },
-      { $set: { ...req.body, user: req.user.id, date: today } },
+      { $set: { ...updates, user: req.user.id, date: today } },
       { new: true, upsert: true, runValidators: true }
     );
 
+    refreshBadges(req.user);
     const data = tracking.toObject();
     data.caloriesGoal = getGoalAdjustedCalories(req.user);
     res.json({ success: true, data });
@@ -71,6 +94,7 @@ exports.addWater = async (req, res, next) => {
       await tracking.save();
     }
 
+    refreshBadges(req.user);
     res.json({ success: true, data: { waterIntake: tracking.waterIntake, waterGoal: tracking.waterGoal } });
   } catch (error) {
     next(error);
@@ -94,6 +118,7 @@ exports.logMeal = async (req, res, next) => {
       { new: true, upsert: true }
     );
 
+    refreshBadges(req.user);
     const data = tracking.toObject();
     data.caloriesGoal = getGoalAdjustedCalories(req.user);
     res.json({ success: true, data });
