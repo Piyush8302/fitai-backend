@@ -172,6 +172,175 @@ exports.getGyms = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+// ── One gym, one month ──────────────────────────────────────────────────────
+// The gym page only had lifetime totals, which say nothing about how a gym is
+// doing right now: a gym that collected ₹2L over two years and nothing since
+// April looks identical to a healthy one. These helpers answer "what happened
+// at this gym during <month>?" and hand back the month before it too, so the
+// page can show the direction rather than a bare number.
+//
+// Months are IST months. GymAttendance.day is already an IST 'YYYY-MM-DD'
+// string, so attendance is filtered on that; payments and cashbook carry real
+// timestamps, so those get an IST-shifted date range.
+const IST_MS = 5.5 * 3600 * 1000;
+
+const istMonth = (month) => {
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(month || ''));
+  const nowIst = new Date(Date.now() + IST_MS);
+  const y = m ? Number(m[1]) : nowIst.getUTCFullYear();
+  const mo = m ? Number(m[2]) - 1 : nowIst.getUTCMonth();
+  return {
+    key: `${y}-${String(mo + 1).padStart(2, '0')}`,
+    label: new Date(Date.UTC(y, mo, 1)).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+    from: new Date(Date.UTC(y, mo, 1) - IST_MS),          // 00:00 IST on the 1st
+    to: new Date(Date.UTC(y, mo + 1, 1) - IST_MS),        // 00:00 IST on the 1st of the next month
+    prev: mo === 0 ? `${y - 1}-12` : `${y}-${String(mo).padStart(2, '0')}`,
+  };
+};
+
+// The numbers for a single month. Kept separate from the lists below so the
+// previous month can be costed at the same time without dragging its rows along.
+const gymMonthSummary = async (gymId, r) => {
+  const Membership = require('../models/Membership');
+  const GymPayment = require('../models/GymPayment');
+  const GymAttendance = require('../models/GymAttendance');
+  const GymCashbook = require('../models/GymCashbook');
+  const inMonth = { $gte: r.from, $lt: r.to };
+
+  const [payFacet, cashRows, joined, totalAtEnd, attFacet] = await Promise.all([
+    GymPayment.aggregate([
+      { $match: { gym: gymId, paidDate: inMonth } },
+      { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    GymCashbook.aggregate([
+      { $match: { gym: gymId, date: inMonth } },
+      { $group: { _id: '$type', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    Membership.countDocuments({ gym: gymId, joinDate: inMonth }),
+    Membership.countDocuments({ gym: gymId, joinDate: { $lt: r.to } }),
+    GymAttendance.aggregate([
+      { $match: { gym: gymId, day: { $gte: `${r.key}-01`, $lte: `${r.key}-31` } } },
+      { $facet: {
+        daily: [{ $group: { _id: '$day', checkins: { $sum: 1 } } }, { $sort: { _id: 1 } }],
+        totals: [{ $group: { _id: null, checkins: { $sum: 1 }, members: { $addToSet: '$user' } } }],
+      } },
+    ]),
+  ]);
+
+  const byMethod = (rows, id) => rows.find((x) => x._id === id)?.amount || 0;
+  const collected = payFacet.reduce((s, x) => s + x.amount, 0);
+  const income = byMethod(cashRows, 'income');
+  const expense = byMethod(cashRows, 'expense');
+  const daily = attFacet[0]?.daily || [];
+  const totals = attFacet[0]?.totals?.[0];
+  const busiest = daily.reduce((b, d) => (!b || d.checkins > b.checkins ? d : b), null);
+
+  return {
+    key: r.key,
+    label: r.label,
+    from: r.from,
+    to: r.to,
+    collection: {
+      total: collected,
+      count: payFacet.reduce((s, x) => s + x.count, 0),
+      cash: byMethod(payFacet, 'cash'),
+      online: byMethod(payFacet, 'online'),
+    },
+    // Cashbook income includes the membership payments above (they post to it
+    // automatically), plus anything the gym recorded by hand.
+    cashbook: { income, expense, net: income - expense },
+    members: { joined, totalAtEnd },
+    attendance: {
+      checkins: totals?.checkins || 0,
+      uniqueMembers: totals?.members?.length || 0,
+      activeDays: daily.length,
+      busiestDay: busiest ? { day: busiest._id, checkins: busiest.checkins } : null,
+      daily: daily.map((d) => ({ day: d._id, checkins: d.checkins })),
+    },
+  };
+};
+
+// @desc  A month's activity for one gym — money in and out, who joined, how
+//        often members actually turned up — with the previous month for context
+//        and the rows behind each number. GET /api/admin/gyms/:id/monthly?month=YYYY-MM
+exports.getGymMonthly = async (req, res, next) => {
+  try {
+    const Membership = require('../models/Membership');
+    const GymPayment = require('../models/GymPayment');
+    const GymCashbook = require('../models/GymCashbook');
+
+    const gym = await Gym.findById(req.params.id).select('name createdAt').lean();
+    if (!gym) return res.status(404).json({ success: false, message: 'Gym not found' });
+
+    const gymId = gym._id;
+    const r = istMonth(req.query.month);
+    const inMonth = { $gte: r.from, $lt: r.to };
+
+    const [summary, prev, payments, joinedMembers, expenses, dueThisMonth] = await Promise.all([
+      gymMonthSummary(gymId, r),
+      gymMonthSummary(gymId, istMonth(r.prev)),
+      GymPayment.find({ gym: gymId, paidDate: inMonth })
+        .populate('user', 'name phone').sort({ paidDate: -1 }).limit(100).lean(),
+      Membership.find({ gym: gymId, joinDate: inMonth })
+        .populate('user', 'name phone').sort({ joinDate: -1 }).limit(100).lean(),
+      GymCashbook.find({ gym: gymId, type: 'expense', date: inMonth })
+        .sort({ date: -1 }).limit(100).lean(),
+      // Fees falling due inside this month, and how much of that is still unpaid
+      // (a member who paid has their due date pushed past the month's end).
+      Membership.find({ gym: gymId, dueDate: inMonth, status: { $nin: ['left'] } })
+        .populate('user', 'name phone').sort({ dueDate: 1 }).limit(100).lean(),
+    ]);
+
+    // The months worth offering in the picker: from the gym's first month to now.
+    const months = [];
+    const start = new Date(gym.createdAt || Date.now());
+    const cur = new Date(Date.now() + IST_MS);
+    for (let y = cur.getUTCFullYear(), m = cur.getUTCMonth(); ; m--) {
+      if (m < 0) { m = 11; y--; }
+      const key = `${y}-${String(m + 1).padStart(2, '0')}`;
+      months.push(key);
+      if (months.length >= 36 || new Date(Date.UTC(y, m, 1)) <= new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))) break;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        gym: { _id: gym._id, name: gym.name, createdAt: gym.createdAt },
+        months,
+        month: summary,
+        prevMonth: {
+          key: prev.key, label: prev.label,
+          collection: prev.collection.total,
+          expense: prev.cashbook.expense,
+          joined: prev.members.joined,
+          checkins: prev.attendance.checkins,
+        },
+        dues: {
+          count: dueThisMonth.length,
+          amount: dueThisMonth.reduce((s, m) => s + (m.fee || 0), 0),
+          list: dueThisMonth.map((m) => ({
+            _id: m._id, user: m.user, plan: m.plan, fee: m.fee, status: m.status,
+            dueDate: m.dueDate, lastPaidDate: m.lastPaidDate,
+            paid: m.lastPaidDate ? new Date(m.lastPaidDate) >= r.from : false,
+          })),
+        },
+        payments: payments.map((p) => ({
+          _id: p._id, user: p.user, amount: p.amount, plan: p.plan,
+          method: p.method, paidDate: p.paidDate, note: p.note || '',
+        })),
+        joinedMembers: joinedMembers.map((m) => ({
+          _id: m._id, user: m.user, plan: m.plan, fee: m.fee,
+          status: m.status, joinDate: m.joinDate, registeredVia: m.registeredVia || 'counter',
+        })),
+        expenses: expenses.map((e) => ({
+          _id: e._id, amount: e.amount, description: e.description || '',
+          date: e.date, method: e.method,
+        })),
+      },
+    });
+  } catch (e) { next(e); }
+};
+
 // @desc  One gym's full picture: info, owner, staff, members, revenue & attendance today.
 exports.getGymDetail = async (req, res, next) => {
   try {

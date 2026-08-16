@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, deleteUser, bulkUsers, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest, getGyms, getGymDetail, toggleGymActive, deleteGym, bulkGyms } = require('../controllers/adminController');
+const { getDashboard, getUsers, getUser, togglePremium, deactivateUser, deleteUser, bulkUsers, updateUserContact, getSubscriptions, approvePayment, rejectPayment, getOwnerRequests, approveOwnerRequest, rejectOwnerRequest, getGyms, getGymDetail, getGymMonthly, toggleGymActive, deleteGym, bulkGyms } = require('../controllers/adminController');
 const { getMessages, resolveMessage, deleteMessage } = require('../controllers/supportController');
 const { protect, admin } = require('../middleware/auth');
 
@@ -26,6 +26,7 @@ router.get('/dashboard', protect, admin, getDashboard);
 // ---- Gyms (platform-wide oversight) ----
 router.get('/gyms', protect, admin, getGyms);
 router.get('/gyms/:id', protect, admin, getGymDetail);
+router.get('/gyms/:id/monthly', protect, admin, getGymMonthly); // one month: collection, expenses, joins, check-ins
 router.put('/gyms/:id/active', protect, admin, toggleGymActive);
 router.post('/gyms/bulk', protect, admin, bulkGyms);         // suspend/activate many at once
 router.delete('/gyms/:id', protect, admin, deleteGym);       // permanent — also wipes members/payments/attendance/cashbook
