@@ -73,7 +73,10 @@ Rules:
       contents.push({ role: 'user', parts: [{ text: message }] });
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        // Alias, not a pinned version — `gemini-2.0-flash` was retired by Google
+        // and this call started 404ing (the chat silently fell back to canned
+        // replies). See the same note in foodController.
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -87,7 +90,11 @@ Rules:
       const data = await response.json();
       console.log('Gemini status:', response.status);
       if (response.ok) {
-        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        // Newer models can split a reply across parts, so take all the text.
+        const reply = (data?.candidates?.[0]?.content?.parts || [])
+          .map((p) => p?.text)
+          .filter(Boolean)
+          .join('\n');
         if (reply) { console.log('Using Gemini AI response'); return reply; }
       }
       console.error('Gemini error:', JSON.stringify(data?.error || data));
