@@ -1758,12 +1758,39 @@ function checkGeofence(gym, lat, lng) {
   return { ok: d <= GEOFENCE_RADIUS_M, distance: Math.round(d) };
 }
 
-// A page that grabs the browser's GPS once, then auto-submits it to `postUrl`.
-// Browsers remember the location permission per site, so it isn't asked every time.
+// A page that gets the browser's GPS, then auto-submits it to `postUrl`.
+//
+// A site cannot grant itself location permission — only the person holding the
+// phone can, through the browser's own prompt. What the page CAN control is
+// whether that prompt ever appears, and this used to get it wrong: it called
+// getCurrentPosition on page load, with no tap behind it. Chrome treats a
+// prompt nobody asked for as noise — dismiss it twice and it auto-blocks the
+// site, after which the call fails instantly and the member sees "please allow
+// location" without ever being offered the chance to. In-app browsers
+// (WhatsApp, Instagram) often refuse outright.
+//
+// So: if permission is already granted, fetch silently and submit — the member
+// notices nothing. Otherwise ask them to tap, which is a gesture the browser
+// honours, and if it is already blocked, say so and give the steps to undo it.
+//
+// The second thing that broke check-ins: one high-accuracy attempt with a 12s
+// timeout, indoors, in a building — GPS often can't get a fix, and the timeout
+// was reported as "allow location access", which the member had already done.
+// Now a timeout quietly retries with the network-based fix that works inside.
 const geoLoaderPage = (gym, postUrl, heading, sub) => PAGE_SHELL(`
   <div class="ok"><div class="big">📍</div>
     <h1>${esc(heading || gym.name)}</h1>
     <p class="muted" id="msg">${esc(sub || 'Getting your location…')}</p>
+  </div>
+  <button type="button" id="allowBtn" style="display:none">📍 Allow location &amp; check in</button>
+  <p class="muted" id="why" style="display:none;margin-top:12px;text-align:center">Your location is checked once, only to confirm you're at the gym.</p>
+  <div id="help" style="display:none;background:#151725;border:1px solid #363a5c;border-radius:12px;padding:14px;margin-top:16px">
+    <div style="font-size:13px;font-weight:700;margin-bottom:8px">Location is blocked for this page</div>
+    <ol style="margin:0;padding-left:18px;color:#c2c3da;font-size:13px;line-height:1.8">
+      <li>Tap the 🔒 (or ⓘ) next to the web address</li>
+      <li>Open <b>Permissions</b> → <b>Location</b></li>
+      <li>Set it to <b>Allow</b>, then tap Retry below</li>
+    </ol>
   </div>
   <form id="geoForm" method="POST" action="${postUrl}" style="display:none">
     <input type="hidden" name="lat" id="lat"/><input type="hidden" name="lng" id="lng"/>
@@ -1771,15 +1798,62 @@ const geoLoaderPage = (gym, postUrl, heading, sub) => PAGE_SHELL(`
   <div id="retry" style="display:none;margin-top:18px"><a class="btn" id="retryA" href="">Retry</a></div>
   <script>
   (function(){
-    var msg=document.getElementById('msg');
-    function fail(t){msg.textContent=t;var r=document.getElementById('retry');document.getElementById('retryA').href=location.href;r.style.display='block';}
-    if(!navigator.geolocation){fail('Location not supported on this device.');return;}
-    navigator.geolocation.getCurrentPosition(function(p){
+    var msg=document.getElementById('msg'), btn=document.getElementById('allowBtn'),
+        why=document.getElementById('why'), help=document.getElementById('help');
+    function show(el){el.style.display='block';}
+    function fail(t,withHelp){
+      msg.textContent=t;
+      if(withHelp)show(help);
+      document.getElementById('retryA').href=location.href;
+      show(document.getElementById('retry'));
+    }
+    function ask(){btn.textContent='📍 Allow location & check in';btn.disabled=false;show(btn);show(why);}
+
+    if(!window.isSecureContext){fail('This page must be opened over https to read your location.');return;}
+    if(!navigator.geolocation){fail('This browser cannot read location. Open the link in Chrome or Safari.');return;}
+    // In-app browsers (WhatsApp / Instagram / Facebook) commonly block location
+    // outright, and no amount of tapping helps — send them to a real browser.
+    if(/FBAN|FBAV|Instagram|Line\\/|WhatsApp/i.test(navigator.userAgent)){
+      fail('Open this link in Chrome or Safari — this in-app browser blocks location.');
+      return;
+    }
+
+    function done(p){
       document.getElementById('lat').value=p.coords.latitude;
       document.getElementById('lng').value=p.coords.longitude;
+      btn.style.display='none';why.style.display='none';
       msg.textContent='Please wait…';
       document.getElementById('geoForm').submit();
-    },function(){fail('📍 Please allow location access, then tap Retry.');},{enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+    }
+    // Indoors a high-accuracy fix often never arrives; fall back to the coarse
+    // network fix, which is well inside the geofence for this purpose.
+    function locate(){
+      msg.textContent='Getting your location…';btn.disabled=true;btn.textContent='Locating…';
+      navigator.geolocation.getCurrentPosition(done,function(e){
+        if(e && e.code===1){ask();fail('Location was denied. Allow it for this page, then tap Retry.',true);return;}
+        navigator.geolocation.getCurrentPosition(done,function(e2){
+          if(e2 && e2.code===1){ask();fail('Location was denied. Allow it for this page, then tap Retry.',true);return;}
+          ask();
+          fail(e2 && e2.code===3
+            ? 'Could not get a location in time. Step near a window or a door and tap Retry.'
+            : 'Could not read your location. Turn on Location/GPS in your phone settings, then tap Retry.');
+        },{enableHighAccuracy:false,timeout:20000,maximumAge:120000});
+      },{enableHighAccuracy:true,timeout:10000,maximumAge:60000});
+    }
+    btn.addEventListener('click',locate);
+
+    // Already allowed → no prompt to show, so just get on with it. Anything else
+    // waits for a tap, because that is what makes the browser show the prompt.
+    if(navigator.permissions && navigator.permissions.query){
+      navigator.permissions.query({name:'geolocation'}).then(function(st){
+        if(st.state==='granted')locate();
+        else if(st.state==='denied')fail('Location is blocked for this page.',true);
+        else {msg.textContent='Tap below to confirm you\\'re at the gym.';ask();}
+      }).catch(function(){locate();});
+    } else {
+      // Safari has no Permissions API for geolocation — ask on a tap there too.
+      msg.textContent='Tap below to confirm you\\'re at the gym.';ask();
+    }
   })();
   </script>`, gym.gymCode);
 
