@@ -268,7 +268,7 @@ const gymAllTimeSummary = async (gymId, gym) => {
   const GymAttendance = require('../models/GymAttendance');
   const GymCashbook = require('../models/GymCashbook');
 
-  const [payFacet, cashRows, joined, totalAtEnd, totalCheckins] = await Promise.all([
+  const [payFacet, cashRows, joined, attFacet] = await Promise.all([
     GymPayment.aggregate([
       { $match: { gym: gymId } },
       { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -278,14 +278,17 @@ const gymAllTimeSummary = async (gymId, gym) => {
       { $group: { _id: '$type', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]),
     Membership.countDocuments({ gym: gymId }),
-    Membership.countDocuments({ gym: gymId }),
-    GymAttendance.countDocuments({ gym: gymId }),
+    GymAttendance.aggregate([
+      { $match: { gym: gymId } },
+      { $group: { _id: null, checkins: { $sum: 1 }, members: { $addToSet: '$user' }, days: { $addToSet: '$day' } } },
+    ]),
   ]);
 
   const byMethod = (rows, id) => rows.find((x) => x._id === id)?.amount || 0;
   const collected = payFacet.reduce((s, x) => s + x.amount, 0);
   const income = byMethod(cashRows, 'income');
   const expense = byMethod(cashRows, 'expense');
+  const att = attFacet[0];
 
   return {
     key: 'all-time',
@@ -299,11 +302,15 @@ const gymAllTimeSummary = async (gymId, gym) => {
       online: byMethod(payFacet, 'online'),
     },
     cashbook: { income, expense, net: income - expense },
-    members: { joined, totalAtEnd },
+    // Over all time "joined" and "total" are the same set of people, which the
+    // page words accordingly rather than printing the number twice.
+    members: { joined, totalAtEnd: joined },
     attendance: {
-      checkins: totalCheckins,
-      uniqueMembers: 0,  // can't easily get unique members without aggregation pipeline
-      activeDays: 0,     // no concept of "active days" for all-time
+      checkins: att?.checkins || 0,
+      uniqueMembers: att?.members?.length || 0,
+      activeDays: att?.days?.length || 0,
+      // Per-day bars over years would be unreadable, so the all-time view skips
+      // the chart entirely instead of drawing a smear.
       busiestDay: null,
       daily: [],
     },
