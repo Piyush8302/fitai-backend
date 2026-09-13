@@ -3,6 +3,44 @@ const { sendOtpEmail, sendLoginOtpEmail, sendWelcomeEmail } = require('../utils/
 const { sendOtpSms } = require('../utils/smsService');
 const { canSendOtp, recordOtpSend } = require('../utils/otpRateLimit');
 const { uploadAvatar } = require('../utils/cloudinary');
+const nodeCrypto = require('crypto');
+
+// ---- OTP --------------------------------------------------------------------
+// verify-otp and reset-password compared `user.otp !== otp`. For an account with
+// no OTP pending both sides are undefined, the comparison is false, and a request
+// carrying only a phone number — no code at all — was handed that account's
+// token. Proven on staging. Every check now goes through checkOtp: it refuses when
+// nothing is pending, compares in constant time, and caps wrong guesses (the
+// counter resets whenever a new code is issued — see the hook in models/User.js).
+const MAX_OTP_ATTEMPTS = 5;
+const makeOtp = () => String(nodeCrypto.randomInt(100000, 1000000));
+
+const checkOtp = async (user, otp) => {
+  if (!user.otp || !user.otpExpiry || new Date(user.otpExpiry).getTime() < Date.now()) {
+    return 'Invalid or expired OTP';
+  }
+  if ((user.otpAttempts || 0) >= MAX_OTP_ATTEMPTS) return 'Too many wrong attempts. Request a new OTP.';
+  const given = (typeof otp === 'string' || typeof otp === 'number') ? String(otp).trim() : '';
+  const a = Buffer.from(given);
+  const b = Buffer.from(String(user.otp));
+  if (a.length === b.length && nodeCrypto.timingSafeEqual(a, b)) return null;
+  user.otpAttempts = (user.otpAttempts || 0) + 1;
+  const locked = user.otpAttempts >= MAX_OTP_ATTEMPTS;
+  if (locked) { user.otp = undefined; user.otpExpiry = undefined; }
+  await user.save();
+  return locked ? 'Too many wrong attempts. Request a new OTP.' : 'Invalid or expired OTP';
+};
+
+// Google sign-in ends by sending a freshly signed JWT to a redirect the client
+// chose. It was used as-is, so `/google/mobile?redirect=https://evil.example`
+// delivered the token to any website — and the same value is written into an
+// inline <script> on the callback page, so a quote in it was script injection on
+// the API's own domain. Only the app's scheme (plus Expo Go outside production).
+const safeAppRedirect = (url) => {
+  const u = String(url || '');
+  const scheme = process.env.NODE_ENV === 'production' ? /^fitai:\/\//i : /^(fitai|exp|exps):\/\//i;
+  return scheme.test(u) && !/["'<>\\\s`]/.test(u) ? u : 'fitai://auth';
+};
 
 // @desc    Register as a gym owner — creates a PENDING request (super-admin approves in panel)
 exports.registerOwner = async (req, res, next) => {
@@ -162,7 +200,7 @@ exports.sendOtp = async (req, res, next) => {
       return res.status(429).json({ success: false, message, retryAfter: rl.wait });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = makeOtp();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
     let user;
@@ -208,16 +246,17 @@ exports.verifyOtp = async (req, res, next) => {
     const { phone, email, otp } = req.body;
     if (!phone && !email) return res.status(400).json({ success: false, message: 'Provide phone or email' });
 
-    const query = email ? { email } : { phone };
-    const user = await User.findOne(query).select('+otp +otpExpiry');
-    if (!user) return res.status(400).json({ success: false, message: 'User not found' });
+    const query = email ? { email: String(email) } : { phone: String(phone) };
+    const user = await User.findOne(query).select('+otp +otpExpiry +otpAttempts');
+    // Same answer whether or not the account exists — no probing for who is registered.
+    if (!user) return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
 
-    if (user.otp !== otp || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
+    const otpError = await checkOtp(user, otp);
+    if (otpError) return res.status(400).json({ success: false, message: otpError });
 
     user.otp = undefined;
     user.otpExpiry = undefined;
+    user.otpAttempts = 0;
     await user.save();
 
     const token = user.getSignedToken();
@@ -230,11 +269,27 @@ exports.verifyOtp = async (req, res, next) => {
 // @desc    Google login (API - receives user info from frontend)
 exports.googleLogin = async (req, res, next) => {
   try {
-    const { email, name, avatar, googleId } = req.body;
+    // This trusted `email` straight from the request body: POST any address and get
+    // that account's token — the super-admin's included. Proven on staging. No
+    // client calls this route (the app uses /google/mobile, where the server
+    // exchanges the code with Google itself), so it now accepts only a Google ID
+    // token that Google confirms was issued for one of our client ids.
+    const { idToken } = req.body;
+    if (!idToken || typeof idToken !== 'string') {
+      return res.status(400).json({ success: false, message: 'Google ID token required' });
+    }
+    const info = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`)
+      .then((r) => r.json()).catch(() => null);
+    const allowedAud = String(process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || '')
+      .split(',').map((x) => x.trim()).filter(Boolean);
+    if (!info || info.error || !info.email || String(info.email_verified) !== 'true' || !allowedAud.includes(info.aud)) {
+      return res.status(401).json({ success: false, message: 'Google sign-in could not be verified' });
+    }
+    const email = String(info.email).toLowerCase();
 
     let user = await User.findOne({ email });
     if (!user) {
-      user = await User.create({ email, name, avatar, authProvider: 'google' });
+      user = await User.create({ email, name: info.name || 'User', avatar: info.picture, authProvider: 'google' });
     }
 
     const token = user.getSignedToken();
@@ -254,7 +309,7 @@ exports.googleMobileAuth = (req, res) => {
   const callbackUrl = `${protocol}://${req.get('host')}/api/auth/google/callback`;
 
   // Store the app's redirect URL in the state parameter so the callback knows where to send the user
-  const appRedirect = req.query.redirect || 'fitai://auth';
+  const appRedirect = safeAppRedirect(req.query.redirect);
   const state = Buffer.from(JSON.stringify({ redirect: appRedirect })).toString('base64');
 
   const authUrl =
@@ -297,7 +352,7 @@ exports.googleCallback = async (req, res) => {
   try {
     if (req.query.state) {
       const stateData = JSON.parse(Buffer.from(req.query.state, 'base64').toString());
-      if (stateData.redirect) appRedirect = stateData.redirect;
+      if (stateData.redirect) appRedirect = safeAppRedirect(stateData.redirect);
     }
   } catch (e) { /* use default */ }
 
@@ -416,7 +471,7 @@ exports.forgotPassword = async (req, res, next) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ success: false, message: 'No account with that email' });
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = makeOtp();
     user.otp = otp;
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
@@ -445,16 +500,16 @@ exports.resetPassword = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
-    const user = await User.findOne({ email }).select('+otp +otpExpiry');
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const user = await User.findOne({ email: String(email) }).select('+otp +otpExpiry +otpAttempts');
+    if (!user) return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
 
-    if (user.otp !== otp || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
+    const otpError = await checkOtp(user, otp);
+    if (otpError) return res.status(400).json({ success: false, message: otpError });
 
-    user.password = newPassword;
+    user.password = String(newPassword);
     user.otp = undefined;
     user.otpExpiry = undefined;
+    user.otpAttempts = 0;
     await user.save();
 
     const token = user.getSignedToken();
@@ -514,7 +569,7 @@ exports.requestEmailChange = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Email already in use by another account' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = makeOtp();
     const user = await User.findById(req.user.id);
     user.otp = otp;
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
@@ -541,13 +596,12 @@ exports.verifyEmailChange = async (req, res, next) => {
     const { otp } = req.body;
     if (!otp) return res.status(400).json({ success: false, message: 'Provide OTP' });
 
-    const user = await User.findById(req.user.id).select('+otp +otpExpiry');
+    const user = await User.findById(req.user.id).select('+otp +otpExpiry +otpAttempts');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.pendingEmail) return res.status(400).json({ success: false, message: 'No pending email change' });
 
-    if (user.otp !== otp || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
+    const otpError = await checkOtp(user, otp);
+    if (otpError) return res.status(400).json({ success: false, message: otpError });
 
     // Double-check email not taken (race condition)
     const existing = await User.findOne({ email: user.pendingEmail });
@@ -584,7 +638,7 @@ exports.requestPhoneChange = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Phone number already in use by another account' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = makeOtp();
     const user = await User.findById(req.user.id);
     user.otp = otp;
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
@@ -605,13 +659,12 @@ exports.verifyPhoneChange = async (req, res, next) => {
     const { otp } = req.body;
     if (!otp) return res.status(400).json({ success: false, message: 'Provide OTP' });
 
-    const user = await User.findById(req.user.id).select('+otp +otpExpiry');
+    const user = await User.findById(req.user.id).select('+otp +otpExpiry +otpAttempts');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.pendingPhone) return res.status(400).json({ success: false, message: 'No pending phone change' });
 
-    if (user.otp !== otp || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
+    const otpError = await checkOtp(user, otp);
+    if (otpError) return res.status(400).json({ success: false, message: otpError });
 
     // Double-check phone not taken
     const existing = await User.findOne({ phone: user.pendingPhone });
@@ -654,6 +707,16 @@ exports.uploadAvatar = async (req, res, next) => {
 // @desc    Seed admin user
 exports.seedAdmin = async (req, res, next) => {
   try {
+    // Was open to anyone: a single unauthenticated POST reset the super-admin's
+    // password to ADMIN_PASSWORD and demoted every other admin. It now needs the
+    // SEED_ADMIN_TOKEN value in an x-seed-token header, and answers 404 — as if it
+    // did not exist — whenever that env var is unset.
+    const seedToken = process.env.SEED_ADMIN_TOKEN || '';
+    const givenToken = String(req.headers['x-seed-token'] || '');
+    if (!seedToken || givenToken.length !== seedToken.length
+      || !nodeCrypto.timingSafeEqual(Buffer.from(givenToken), Buffer.from(seedToken))) {
+      return res.status(404).json({ success: false, message: 'Route not found' });
+    }
     const adminEmail = (process.env.ADMIN_EMAIL || 'yadavpiyush8302@gmail.com').toLowerCase();
     // Password comes ONLY from env (never a hardcoded default, never echoed back).
     const adminPassword = process.env.ADMIN_PASSWORD;

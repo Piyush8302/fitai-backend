@@ -60,6 +60,9 @@ const userSchema = new mongoose.Schema({
   webPushSubscriptions: { type: [mongoose.Schema.Types.Mixed], default: [] },
   otp: { type: String, select: false },
   otpExpiry: { type: Date, select: false },
+  // Wrong guesses against the current OTP. A 6-digit code is only a million
+  // possibilities; without a cap it can simply be walked. Reset on every send.
+  otpAttempts: { type: Number, default: 0, select: false },
   pendingEmail: { type: String },
   pendingPhone: { type: String },
 
@@ -87,6 +90,15 @@ const userSchema = new mongoose.Schema({
   // Staff account status (owner-managed). Non-active staff can't perform gym actions.
   staffStatus: { type: String, enum: ['active', 'inactive', 'blocked', 'left'], default: 'active' },
 }, { timestamps: true });
+
+// A fresh OTP gets a fresh set of attempts. Every place that issues a code —
+// login, forgot-password, email and phone change — sets `otp`, so resetting here
+// covers them all without each remembering to. Clearing `otp` (on success, or
+// when checkOtp locks it) does not count as issuing one.
+userSchema.pre('save', function (next) {
+  if (this.isModified('otp') && this.otp) this.otpAttempts = 0;
+  next();
+});
 
 // Heal documents that predate the min/max rules above.
 //
