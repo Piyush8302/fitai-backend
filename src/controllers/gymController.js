@@ -2358,6 +2358,13 @@ exports.gymPublicRegister = async (req, res) => {
 
 // @desc  Public JSON check-in (used by the app scanner) — no auth
 exports.webCheckIn = async (req, res, next) => {
+  // Retired. This was an unauthenticated endpoint that took any phone number
+  // plus the gym's printed code, created an account for it if needed and marked
+  // attendance — no geofence, no login, no token. Anyone who had seen the wall QR
+  // once could check in (or register) any number, from anywhere. Nothing in the
+  // app, the owner web or the website calls it; the /g/ web flow checks location.
+  return res.status(410).json({ success: false, message: 'This check-in method is no longer available. Scan the gym QR from the FitAI app.' });
+  // eslint-disable-next-line no-unreachable
   try {
     const phone = String(req.body.phone || '').replace(/\D/g, '');
     if (phone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone required' });

@@ -13,6 +13,17 @@ const getCashfreeConfig = () => ({
     : 'https://sandbox.cashfree.com/pg',
 });
 
+// A Razorpay payment is genuine only if its signature is the HMAC-SHA256 of
+// "order_id|payment_id" under our key secret. No secret configured, no signature
+// sent, or a mismatch — every one of those means "not verified".
+const validRazorpaySignature = (orderId, paymentId, signature) => {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret || typeof signature !== 'string' || !orderId || !paymentId) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${orderId}|${paymentId}`).digest('hex');
+  return expected.length === signature.length
+    && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+};
+
 // Lazy-init Razorpay (only when keys exist)
 let razorpayInstance = null;
 const getRazorpay = () => {
@@ -196,8 +207,25 @@ exports.cashfreeWebhook = async (req, res) => {
     console.log(`[Cashfree Webhook] Order: ${orderId}, Status: ${paymentStatus}`);
 
     if (paymentStatus === 'SUCCESS') {
-      const subscription = await Subscription.findOne({ orderId });
+      const subscription = await Subscription.findOne({ orderId: String(orderId) });
       if (!subscription || subscription.status === 'active') return res.json({ success: true });
+
+      // No auth on this route and the payload was never verified, so a POST that
+      // simply claimed SUCCESS for your own order id activated premium for free.
+      // Ask Cashfree whether the link is actually paid, and believe only that.
+      const cf = getCashfreeConfig();
+      let paid = false;
+      try {
+        const r = await fetchFn(`${cf.baseUrl}/links/${encodeURIComponent(subscription.orderId)}`, {
+          headers: { 'x-client-id': cf.appId, 'x-client-secret': cf.secretKey, 'x-api-version': '2022-09-01' },
+        });
+        const link = await r.json();
+        paid = r.ok && link.link_status === 'PAID';
+      } catch (e) { paid = false; }
+      if (!paid) {
+        console.log(`[Cashfree Webhook] ${orderId} claimed SUCCESS but Cashfree does not show it paid — ignored`);
+        return res.json({ success: true });
+      }
 
       const startDate = new Date();
       const endDate = new Date();
@@ -367,18 +395,14 @@ exports.verifyPayment = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'orderId and paymentId required' });
     }
 
-    // Verify signature if Razorpay is configured
-    if (process.env.RAZORPAY_KEY_SECRET && signature) {
-      const expectedSig = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(orderId + '|' + paymentId)
-        .digest('hex');
-      if (expectedSig !== signature) {
-        return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });
-      }
+    // The signature was checked only when one was sent, so leaving it out skipped
+    // verification and activated premium for nothing. It is required now, and the
+    // order has to belong to the person asking.
+    if (!validRazorpaySignature(orderId, paymentId, signature)) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed. Invalid signature.' });
     }
 
-    const subscription = await Subscription.findOne({ orderId });
+    const subscription = await Subscription.findOne({ orderId: String(orderId), user: req.user.id });
     if (!subscription) return res.status(404).json({ success: false, message: 'Order not found' });
     if (subscription.status === 'active') return res.json({ success: true, message: 'Already activated', data: subscription });
 
@@ -524,18 +548,15 @@ exports.checkoutCallback = async (req, res, next) => {
       return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Payment Failed</h2><p style="color:#888">No payment received. Please try again.</p></div></body></html>`);
     }
 
-    // Verify signature
-    if (process.env.RAZORPAY_KEY_SECRET && signature) {
-      const expectedSig = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(orderId + '|' + paymentId)
-        .digest('hex');
-      if (expectedSig !== signature) {
-        return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Verification Failed</h2><p style="color:#888">Payment signature mismatch. Contact support.</p></div></body></html>`);
-      }
+    // Verify signature — required. This route has no login, and the check used to
+    // be skipped whenever the POST left the signature out, so anyone could activate
+    // premium on any order with made-up payment ids.
+    if (!validRazorpaySignature(orderId, paymentId, signature)) {
+      return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Verification Failed</h2><p style="color:#888">Payment signature mismatch. Contact support.</p></div></body></html>`);
     }
 
-    const subscription = await Subscription.findById(subscriptionId);
+    // A genuine signature for one order must not unlock a different subscription.
+    const subscription = await Subscription.findOne({ _id: subscriptionId, orderId: String(orderId) });
     if (!subscription) {
       return res.send(`<html><body style="background:#0D0D1A;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#FF6B6B">Order Not Found</h2></div></body></html>`);
     }

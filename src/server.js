@@ -27,11 +27,23 @@ app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(morgan('dev'));
+// Must run after the body parsers and before any route touches the database.
+app.use(require('./middleware/sanitize'));
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Rate limiting
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100, message: { success: false, message: 'Too many requests, try again after 15 minutes' } });
+//
+// General: was 100 requests per 15 minutes per IP. A gym's members share one
+// wifi, so they share one IP — at launch a busy evening would have locked the
+// whole gym out, while the owner app polls in the background on top of that.
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, legacyHeaders: false, message: { success: false, message: 'Too many requests, try again after 15 minutes' } });
 app.use('/api/', limiter);
+
+// Sign-in and reset: the endpoints worth guessing against get a tight budget of
+// their own, on top of the per-OTP attempt cap in authController.
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { success: false, message: 'Too many attempts. Please wait 15 minutes and try again.' } });
+['/api/auth/verify-otp', '/api/auth/login', '/api/auth/reset-password', '/api/auth/send-otp', '/api/auth/forgot-password', '/api/auth/seed-admin']
+  .forEach((p) => app.use(p, authLimiter));
 
 // ============ ROUTES ============
 
